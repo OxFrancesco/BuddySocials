@@ -41,12 +41,14 @@ export const widgetValidator = v.object({
     v.literal("inbox"),
     v.literal("platform"),
     v.literal("goals"),
+    v.literal("mix"),
   ),
   size: v.union(v.literal("s"), v.literal("m"), v.literal("l"), v.literal("w"), v.literal("xl")),
   config: v.object({
     metric: metricValidator,
     range: v.union(v.literal(7), v.literal(28), v.literal(90)),
     platform: v.union(v.literal("all"), platformValidator),
+    chart: v.optional(v.union(v.literal("days"), v.literal("weeks"), v.literal("bars"))),
   }),
 });
 

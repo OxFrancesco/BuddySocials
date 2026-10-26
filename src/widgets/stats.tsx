@@ -1,8 +1,9 @@
+import { useMemo } from "react";
 import { View } from "react-native";
 import { Area, AreaChart, Bar, BarChart, Sparkline, Tooltip, XAxis } from "react-native-dither-kit";
-import { compact, grouped, signedPercent } from "@shared/format";
-import { METRIC_LABEL } from "@shared/metrics";
-import { PLATFORM_TAG, type Platform } from "@shared/platforms";
+import { compact, grouped, percentChange, shortDay, signedPercent } from "@shared/format";
+import { METRIC_LABEL, metricValue } from "@shared/metrics";
+import { PLATFORM_COLOR, PLATFORM_LABEL, PLATFORM_TAG, type Platform } from "@shared/platforms";
 import type { WidgetConfig } from "@shared/widgets";
 import { Figure, Label } from "@/ui/text";
 import { color } from "@/theme";
@@ -188,6 +189,95 @@ export function PlatformBody({ config, height, cols }: WidgetBodyProps) {
           <Sparkline data={views.series} color={color.coral} variant="gradient" animate style={{ flex: 1, minHeight: 0 }} />
         </Bleed>
       ) : null}
+    </View>
+  );
+}
+
+type MixEntry = { platform: Platform; total: number; change: number | undefined; days: number[] };
+
+/** Each connected platform as its own coloured series: stacked days, side-by-side weeks, or one bar each. */
+export function MixBody({ config, rows, cols }: WidgetBodyProps) {
+  const overview = useOverview(config.range);
+  const entries = useMemo<MixEntry[] | null | undefined>(() => {
+    if (!overview) return overview;
+    return overview.platforms
+      .map((platform) => {
+        const days = overview.days.map((_, index) => {
+          const day = overview.series[platform]?.[index];
+          return day ? metricValue(day, config.metric) : 0;
+        });
+        const total = days.reduce((a, b) => a + b, 0);
+        const previous = overview.previous[platform] ? metricValue(overview.previous[platform]!, config.metric) : 0;
+        return { platform, total, change: percentChange(total, previous), days };
+      })
+      .filter((entry) => entry.total > 0)
+      .sort((a, b) => b.total - a.total);
+  }, [overview, config.metric]);
+
+  if (entries === undefined || overview === undefined) return <Loading />;
+  if (entries === null || overview === null || entries.length === 0) return <Empty />;
+
+  const chart = config.chart ?? "days";
+  const chartConfig = Object.fromEntries(
+    entries.map((entry) => [entry.platform, { label: PLATFORM_LABEL[entry.platform], color: PLATFORM_COLOR[entry.platform] }]),
+  );
+  let data: Record<string, number | string>[];
+  if (chart === "bars") {
+    data = entries.map((entry) => ({
+      label: PLATFORM_TAG[entry.platform],
+      ...Object.fromEntries(entries.map((other) => [other.platform, other.platform === entry.platform ? entry.total : 0])),
+    }));
+  } else {
+    const bucket = chart === "weeks" && overview.days.length > 7 ? 7 : 1;
+    const count = Math.ceil(overview.days.length / bucket);
+    data = Array.from({ length: count }, (_, index) => {
+      // Buckets end on today, so a partial bucket sits at the start.
+      const end = overview.days.length - (count - 1 - index) * bucket;
+      const start = Math.max(0, end - bucket);
+      return {
+        label: shortDay(overview.days[start]!),
+        ...Object.fromEntries(entries.map((entry) => [entry.platform, entry.days.slice(start, end).reduce((a, b) => a + b, 0)])),
+      };
+    });
+  }
+  const showChange = chart === "bars" && (rows > 1 || cols >= 4);
+
+  return (
+    <View style={{ flex: 1, gap: 8 }}>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", columnGap: 12, rowGap: 4 }}>
+        {entries.map((entry) => (
+          <View key={entry.platform} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+            <View style={{ width: 8, height: 8, backgroundColor: PLATFORM_COLOR[entry.platform] }} />
+            <Label size={10} tone="fg">
+              {PLATFORM_TAG[entry.platform]} {compact(entry.total)}
+            </Label>
+            {showChange && entry.change !== undefined ? (
+              <Label size={10} tone={entry.change < 0 ? "coral" : "dim"}>
+                {signedPercent(entry.change)}
+              </Label>
+            ) : null}
+          </View>
+        ))}
+      </View>
+      <Bleed>
+        <Measured>
+          {({ height }) => (
+            <BarChart
+              data={data}
+              config={chartConfig}
+              stackType={chart === "weeks" ? "default" : "stacked"}
+              style={{ height, minHeight: 0 }}
+              margins={{ top: 4, right: 0, bottom: 0, left: 0 }}
+              animate
+            >
+              {entries.map((entry) => (
+                <Bar key={entry.platform} dataKey={entry.platform} variant="gradient" />
+              ))}
+              <Tooltip labelKey="label" valueFormatter={(value) => grouped(value)} />
+            </BarChart>
+          )}
+        </Measured>
+      </Bleed>
     </View>
   );
 }

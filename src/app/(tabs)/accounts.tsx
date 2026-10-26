@@ -129,7 +129,7 @@ export default function Accounts() {
                 testID={`pin-${name}`}
                 size="sm"
                 variant="outline"
-                label={name === "LatestPost" ? "Latest post" : name}
+                label={name === "LatestPost" ? "Latest post" : name === "Mix" ? "Platform mix" : name}
                 accessibilityLabel={`Add ${name === "LatestPost" ? "Latest post" : name} widget to the home screen`}
                 onPress={() =>
                   void requestPinWidget({ widgetName: name }).then((shown) => {

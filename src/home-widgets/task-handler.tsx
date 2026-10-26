@@ -4,6 +4,7 @@ import {
   GoalsWidget,
   InboxWidget,
   LatestPostWidget,
+  MixWidget,
   PlatformsWidget,
   PulseWidget,
   SetupWidget,
@@ -11,10 +12,11 @@ import {
 } from "./widgets";
 
 /** Names match `widgets[].name` in app.config.ts. */
-export const HOME_WIDGETS = ["Views", "Pulse", "Platforms", "Goals", "Inbox", "LatestPost"] as const;
+export const HOME_WIDGETS = ["Views", "Mix", "Pulse", "Platforms", "Goals", "Inbox", "LatestPost"] as const;
 
 const RENDERERS = {
   Views: ViewsWidget,
+  Mix: MixWidget,
   Pulse: PulseWidget,
   Platforms: PlatformsWidget,
   Goals: GoalsWidget,

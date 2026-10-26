@@ -1,7 +1,7 @@
 import { useMutation, useQuery } from "convex/react";
 import { useCallback } from "react";
 import { api } from "../../convex/_generated/api";
-import { DEFAULT_LAYOUT, WIDGETS, newWidget, type WidgetInstance, type WidgetType } from "@shared/widgets";
+import { DEFAULT_LAYOUT, WIDGETS, newWidget, type WidgetConfig, type WidgetInstance, type WidgetType } from "@shared/widgets";
 
 /** The home layout, saved to Convex with optimistic updates so edits feel local. */
 export function useLayout() {
@@ -26,10 +26,10 @@ export function useLayout() {
       if (!current) return;
       commit(current.filter((widget) => widget.id !== id));
     },
-    add(type: WidgetType) {
+    add(type: WidgetType, config?: Partial<WidgetConfig>) {
       const base = current ?? DEFAULT_LAYOUT;
       const id = `${type}-${Date.now().toString(36)}`;
-      commit([...base, newWidget(type, id)]);
+      commit([...base, newWidget(type, id, config)]);
       return id;
     },
     cycleSize(id: string) {

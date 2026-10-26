@@ -3,7 +3,7 @@ import { ScrollView, View, useWindowDimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { DASHBOARD_METRICS, METRIC_LABEL } from "@shared/metrics";
 import { PLATFORMS, PLATFORM_LABEL } from "@shared/platforms";
-import { RANGES, WIDGETS, WIDGET_SIZES, type PlatformFilter } from "@shared/widgets";
+import { MIX_CHARTS, MIX_CHART_LABEL, RANGES, WIDGETS, WIDGET_SIZES, type PlatformFilter } from "@shared/widgets";
 import { Button } from "@/ui/button";
 import { Chips } from "@/ui/chips";
 import { Display } from "@/ui/text";
@@ -48,6 +48,16 @@ export default function EditWidget() {
             options={definition.sizes.map((size) => ({ value: size, label: WIDGET_SIZES[size].label }))}
             value={widget.size}
             onChange={(size) => layout.update(widget.id, (current) => ({ ...current, size }))}
+          />
+        </View>
+      ) : null}
+      {definition.settings.includes("chart") ? (
+        <View>
+          <Chips
+            testIDPrefix="chart"
+            options={MIX_CHARTS.map((chart) => ({ value: chart, label: MIX_CHART_LABEL[chart] }))}
+            value={widget.config.chart ?? "days"}
+            onChange={(chart) => set({ chart })}
           />
         </View>
       ) : null}

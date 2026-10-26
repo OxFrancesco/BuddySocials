@@ -20,10 +20,16 @@ export type RangeDays = (typeof RANGES)[number];
 
 export type PlatformFilter = Platform | "all";
 
+/** How the platform mix widget draws: stacked days, side-by-side weeks, or one bar per platform. */
+export const MIX_CHARTS = ["days", "weeks", "bars"] as const;
+export type MixChart = (typeof MIX_CHARTS)[number];
+export const MIX_CHART_LABEL: Record<MixChart, string> = { days: "Days", weeks: "Weeks", bars: "Platforms" };
+
 export type WidgetConfig = {
   metric: DashboardMetric;
   range: RangeDays;
   platform: PlatformFilter;
+  chart?: MixChart;
 };
 
 export type WidgetType =
@@ -34,7 +40,8 @@ export type WidgetType =
   | "latestPost"
   | "inbox"
   | "platform"
-  | "goals";
+  | "goals"
+  | "mix";
 
 export type WidgetInstance = {
   id: string;
@@ -106,6 +113,13 @@ export const WIDGETS: Record<WidgetType, WidgetDefinition> = {
     settings: [],
     defaults: BASE,
   },
+  mix: {
+    title: "Platform mix",
+    description: "Each platform as its own coloured bar.",
+    sizes: ["l", "m", "w", "xl"],
+    settings: ["chart", "metric", "range"],
+    defaults: { ...BASE, chart: "days" },
+  },
   platform: {
     title: "Platform",
     description: "Followers and views for one account.",
@@ -122,9 +136,9 @@ export function isWidgetType(value: unknown): value is WidgetType {
   return typeof value === "string" && value in WIDGETS;
 }
 
-export function newWidget(type: WidgetType, id: string): WidgetInstance {
+export function newWidget(type: WidgetType, id: string, config?: Partial<WidgetConfig>): WidgetInstance {
   const definition = WIDGETS[type];
-  return { id, type, size: definition.sizes[0]!, config: { ...definition.defaults } };
+  return { id, type, size: definition.sizes[0]!, config: { ...definition.defaults, ...config } };
 }
 
 /** Repairs anything a stale client or an older layout version could have stored. */
@@ -143,7 +157,12 @@ export function sanitizeWidget(widget: WidgetInstance): WidgetInstance | null {
       ? widget.config.platform
       : definition.defaults.platform;
   if (definition.needsSinglePlatform && platform === "all") platform = definition.defaults.platform;
-  return { id: widget.id, type: widget.type, size, config: { metric, range, platform } };
+  const chart = definition.settings.includes("chart")
+    ? (MIX_CHARTS as readonly string[]).includes(widget.config.chart ?? "")
+      ? widget.config.chart
+      : definition.defaults.chart
+    : undefined;
+  return { id: widget.id, type: widget.type, size, config: { metric, range, platform, ...(chart ? { chart } : {}) } };
 }
 
 export const DEFAULT_LAYOUT: WidgetInstance[] = [

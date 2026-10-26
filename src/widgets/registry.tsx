@@ -3,7 +3,7 @@ import { PLATFORM_LABEL, PLATFORM_TAG } from "@shared/platforms";
 import { WIDGET_SIZES, type WidgetConfig, type WidgetInstance, type WidgetType } from "@shared/widgets";
 import { GoalsBody, InboxBody, LatestPostBody, TopPostsBody } from "./content";
 import { Frame } from "./frame";
-import { MetricBody, PlatformBody, SplitBody, TrendBody, titleFor, type WidgetBodyProps } from "./stats";
+import { MetricBody, MixBody, PlatformBody, SplitBody, TrendBody, titleFor, type WidgetBodyProps } from "./stats";
 
 const BODIES: Record<WidgetType, { Body: ComponentType<WidgetBodyProps>; title: (config: WidgetConfig) => string }> = {
   metric: { Body: MetricBody, title: (config) => titleFor(config, "Number") },
@@ -19,6 +19,7 @@ const BODIES: Record<WidgetType, { Body: ComponentType<WidgetBodyProps>; title: 
     title: (config) => (config.platform === "all" ? "Inbox" : `Inbox · ${PLATFORM_TAG[config.platform]}`),
   },
   goals: { Body: GoalsBody, title: () => "Goals" },
+  mix: { Body: MixBody, title: (config) => titleFor({ ...config, platform: "all" }, "") },
   platform: {
     Body: PlatformBody,
     title: (config) => `${config.platform === "all" ? "All" : PLATFORM_LABEL[config.platform]} · ${config.range}d`,

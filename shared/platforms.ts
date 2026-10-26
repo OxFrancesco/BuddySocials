@@ -19,6 +19,15 @@ export const PLATFORM_TAG: Record<Platform, string> = {
   linkedin: "LI",
 };
 
+/** One colour per platform, toned so each reads on black next to the others. */
+export const PLATFORM_COLOR: Record<Platform, `#${string}`> = {
+  youtube: "#FF4D4D",
+  instagram: "#E1449B",
+  tiktok: "#2EE6E0",
+  x: "#F2F2F2",
+  linkedin: "#4C8DFF",
+};
+
 export function isPlatform(value: unknown): value is Platform {
   return typeof value === "string" && (PLATFORMS as readonly string[]).includes(value);
 }

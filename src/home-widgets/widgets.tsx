@@ -1,7 +1,7 @@
 import { FlexWidget, SvgWidget, TextWidget } from "react-native-android-widget";
 import { compact, percentChange, relativeTime, signedPercent } from "@shared/format";
-import { PLATFORM_LABEL, PLATFORM_TAG } from "@shared/platforms";
-import { ditherAreaSvg, ditherBarSvg, goalBarSvg } from "./dither-svg";
+import { PLATFORM_COLOR, PLATFORM_LABEL, PLATFORM_TAG } from "@shared/platforms";
+import { ditherAreaSvg, ditherBarSvg, ditherStackSvg, goalBarSvg } from "./dither-svg";
 import type { HomeSnapshot } from "./snapshot";
 
 /** Same tokens as the app. Widget primitives need literal colours. */
@@ -295,7 +295,7 @@ export function PlatformsWidget({ snapshot, ...size }: Size & { snapshot: HomeSn
                 </Row>
               </Row>
               <SvgWidget
-                svg={ditherBarSvg({ width: barWidth, height: 14, share: entry.views / max, color: CORAL })}
+                svg={ditherBarSvg({ width: barWidth, height: 14, share: entry.views / max, color: PLATFORM_COLOR[entry.platform] })}
                 style={{ width: barWidth, height: 14 }}
               />
               {withFollowers && entry.followers ? <Micro text={`${compact(entry.followers)} followers`} color={FAINT} /> : null}
@@ -320,7 +320,7 @@ export function PlatformsWidget({ snapshot, ...size }: Size & { snapshot: HomeSn
               <Micro text={PLATFORM_TAG[entry.platform]} color={FG} size={11} />
             </FlexWidget>
             <SvgWidget
-              svg={ditherBarSvg({ width: barWidth, height: 12, share: entry.views / max, color: CORAL })}
+              svg={ditherBarSvg({ width: barWidth, height: 12, share: entry.views / max, color: PLATFORM_COLOR[entry.platform] })}
               style={{ width: barWidth, height: 12 }}
             />
             {narrow ? null : (
@@ -422,6 +422,45 @@ export function LatestPostWidget({ snapshot, ...size }: Size & { snapshot: HomeS
           <Stat key={label} value={compact(value)} label={label} size={short ? 20 : showCurve ? 24 : 30} />
         ))}
       </Row>
+    </Shell>
+  );
+}
+
+/* ------------------------------------------------------------------ Mix */
+
+export function MixWidget({ snapshot, ...size }: Size & { snapshot: HomeSnapshot }) {
+  const { narrow, short, tall, inner } = layout(size);
+  const entries = snapshot.perPlatform.filter((entry) => entry.daily.some((value) => value > 0)).sort((a, b) => b.views - a.views);
+  if (entries.length === 0) {
+    return (
+      <Shell {...size} uri="buddysocials://">
+        <Micro text="Views by platform" />
+        <Line text="No views yet" color={FAINT} />
+      </Shell>
+    );
+  }
+  const days = Math.max(...entries.map((entry) => entry.daily.length));
+  const stacks = Array.from({ length: days }, (_, day) => entries.map((entry) => entry.daily[day] ?? 0));
+  const colors = entries.map((entry) => PLATFORM_COLOR[entry.platform]);
+  const chartHeight = Math.max(40, size.height - (short ? 62 : tall ? 120 : 92));
+  const legend = entries.slice(0, narrow ? 3 : 5);
+  return (
+    <Shell
+      {...size}
+      uri="buddysocials://"
+      stack
+      chart={<SvgWidget svg={ditherStackSvg(stacks, colors, { width: inner, height: chartHeight })} style={{ width: inner, height: chartHeight }} />}
+    >
+      <Micro text={`Views by platform · ${days}d`} />
+      <FlexWidget style={{ flexDirection: tall && !narrow ? "column" : "row", flexGap: tall ? 6 : 12, width: "match_parent" }}>
+        {legend.map((entry) => (
+          <FlexWidget key={entry.platform} style={{ flexDirection: "row", alignItems: "center", flexGap: 6 }}>
+            <FlexWidget style={{ width: 8, height: 8, backgroundColor: PLATFORM_COLOR[entry.platform] }} />
+            <Micro text={tall && !narrow ? PLATFORM_LABEL[entry.platform] : PLATFORM_TAG[entry.platform]} color={FG} size={tall ? 11 : 10} />
+            <Micro text={compact(entry.daily.reduce((a, b) => a + b, 0))} color={DIM} size={tall ? 11 : 10} />
+          </FlexWidget>
+        ))}
+      </FlexWidget>
     </Shell>
   );
 }

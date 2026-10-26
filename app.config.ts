@@ -27,6 +27,7 @@ const homeWidgets: WithAndroidWidgetsParams = {
   widgets: [
     // Every widget resizes from 2x1 up; each one lays itself out for its current size.
     W("Views", "Views", "Views this week with the daily trend", 4, 2, "views"),
+    W("Mix", "Platform mix", "Daily views with each platform in its own colour", 4, 2, "mix"),
     W("Pulse", "Pulse", "Views, interactions and new followers this week", 2, 2, "pulse"),
     W("Platforms", "Platforms", "Views by platform with the change from last week", 4, 2, "platforms"),
     W("Goals", "Goals", "Progress on your goals", 4, 2, "goals"),
