@@ -1,7 +1,7 @@
 import { FlexWidget, SvgWidget, TextWidget } from "react-native-android-widget";
 import { compact, percentChange, relativeTime, signedPercent } from "@shared/format";
 import { PLATFORM_COLOR, PLATFORM_LABEL, PLATFORM_TAG } from "@shared/platforms";
-import { ditherAreaSvg, ditherBarSvg, ditherLinesSvg, goalBarSvg } from "./dither-svg";
+import { ditherAreaSvg, ditherAreasSvg, ditherBarSvg, goalBarSvg } from "./dither-svg";
 import type { HomeSnapshot } from "./snapshot";
 
 /** Same tokens as the app. Widget primitives need literal colours. */
@@ -439,7 +439,7 @@ export function MixWidget({ snapshot, ...size }: Size & { snapshot: HomeSnapshot
       </Shell>
     );
   }
-  // Last seven days, one overlapping line per platform; the biggest draws last so it sits on top.
+  // Last seven days, one overlapping area per platform; the biggest draws first so the others sit over it.
   const week = entries.map((entry) => entry.daily.slice(-7));
   const days = Math.max(...week.map((values) => values.length));
   const chartHeight = Math.max(40, size.height - (short ? 62 : tall ? 120 : 92));
@@ -451,7 +451,7 @@ export function MixWidget({ snapshot, ...size }: Size & { snapshot: HomeSnapshot
       stack
       chart={
         <SvgWidget
-          svg={ditherLinesSvg([...week].reverse(), entries.map((entry) => PLATFORM_COLOR[entry.platform]).reverse(), { width: inner, height: chartHeight })}
+          svg={ditherAreasSvg(week, entries.map((entry) => PLATFORM_COLOR[entry.platform]), { width: inner, height: chartHeight })}
           style={{ width: inner, height: chartHeight }}
         />
       }

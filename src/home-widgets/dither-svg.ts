@@ -104,14 +104,14 @@ ${tick !== null ? `<rect x="${tick - 1}" y="0" width="2" height="${height}" fill
 }
 
 /**
- * Overlapping lines, one per platform, each with a short dithered glow under
- * it, matching the in-app Platform mix "Lines" chart. Series share one scale;
- * later series draw on top.
+ * Overlapping dithered areas, one per platform, matching the in-app Platform
+ * mix chart. Series share one scale; later series draw over earlier ones, so
+ * pass the biggest first.
  */
-export function ditherLinesSvg(
+export function ditherAreasSvg(
   series: readonly (readonly number[])[],
   colors: readonly string[],
-  { width, height, cell = 3, glow = 6 }: { width: number; height: number; cell?: number; glow?: number },
+  { width, height, cell = 3 }: { width: number; height: number; cell?: number },
 ): string {
   const columns = Math.max(2, Math.floor(width / cell));
   const rows = Math.max(4, Math.floor(height / cell));
@@ -133,9 +133,10 @@ export function ditherLinesSvg(
       const next = column + 1 < columns ? topAt(column + 1) : top;
       // Solid stroke, filled vertically between neighbours so steep slopes stay connected.
       for (let row = Math.min(top, next); row <= Math.max(top, next) + 1 && row < rows; row++) grid[row]![column] = colors[index]!;
-      for (let step = 2; step < glow && top + step < rows; step++) {
-        const density = 0.55 - step / (glow * 2);
-        if ((BAYER4[(top + step) % 4]![column % 4]! + 0.5) / 16 < density) grid[top + step]![column] = colors[index]!;
+      // Fill down to the baseline, thinning with depth like Dither Kit's gradient areas.
+      for (let row = top + 2; row < rows; row++) {
+        const density = Math.max(0.08, 0.75 * (1 - (row - top) / Math.max(1, rows - top)));
+        if ((BAYER4[row % 4]![column % 4]! + 0.5) / 16 < density) grid[row]![column] = colors[index]!;
       }
     }
   });

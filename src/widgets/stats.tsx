@@ -1,9 +1,9 @@
 import { useMemo } from "react";
 import { View } from "react-native";
-import { Area, AreaChart, Bar, BarChart, Line, LineChart, Sparkline, Tooltip, XAxis } from "react-native-dither-kit";
+import { Area, AreaChart, Bar, BarChart, Sparkline, Tooltip, XAxis } from "react-native-dither-kit";
 import { compact, grouped, percentChange, shortDay, signedPercent } from "@shared/format";
 import { METRIC_LABEL, metricValue } from "@shared/metrics";
-import { PLATFORM_COLOR, PLATFORM_LABEL, PLATFORM_TAG, type Platform } from "@shared/platforms";
+import { PLATFORM_COLOR, PLATFORM_LABEL, PLATFORM_TAG, accentFor, type Platform } from "@shared/platforms";
 import type { WidgetConfig } from "@shared/widgets";
 import { Figure, Label } from "@/ui/text";
 import { color } from "@/theme";
@@ -58,7 +58,7 @@ export function MetricBody({ config, width, height, cols }: WidgetBodyProps) {
           <Change value={data.change} />
         </View>
         <Bleed>
-          <Sparkline data={data.series} color={color.coral} variant="gradient" animate style={{ flex: 1, minHeight: 0 }} />
+          <Sparkline data={data.series} color={accentFor(config.platform, color.coral)} variant="gradient" animate style={{ flex: 1, minHeight: 0 }} />
         </Bleed>
       </View>
     );
@@ -73,7 +73,7 @@ export function MetricBody({ config, width, height, cols }: WidgetBodyProps) {
       </View>
       <Bleed sides="right">
         <View style={{ flex: 1, paddingTop: height * 0.15 }}>
-          <Sparkline data={data.series} color={color.coral} variant="gradient" animate style={{ flex: 1, minHeight: 0 }} />
+          <Sparkline data={data.series} color={accentFor(config.platform, color.coral)} variant="gradient" animate style={{ flex: 1, minHeight: 0 }} />
         </View>
       </Bleed>
     </View>
@@ -96,7 +96,7 @@ export function TrendBody({ config, rows }: WidgetBodyProps) {
           {({ height }) => (
             <AreaChart
               data={rowsData}
-              config={{ value: { label: METRIC_LABEL[config.metric], color: color.coral } }}
+              config={{ value: { label: METRIC_LABEL[config.metric], color: accentFor(config.platform, color.coral) } }}
               style={{ height, minHeight: 0 }}
               margins={{ top: 6, right: 0, bottom: 0, left: 0 }}
               animate
@@ -186,7 +186,7 @@ export function PlatformBody({ config, height, cols }: WidgetBodyProps) {
       </View>
       {views.hasData ? (
         <Bleed>
-          <Sparkline data={views.series} color={color.coral} variant="gradient" animate style={{ flex: 1, minHeight: 0 }} />
+          <Sparkline data={views.series} color={accentFor(config.platform, color.coral)} variant="gradient" animate style={{ flex: 1, minHeight: 0 }} />
         </Bleed>
       ) : null}
     </View>
@@ -263,13 +263,13 @@ export function MixBody({ config, rows, cols }: WidgetBodyProps) {
         <Measured>
           {({ height }) =>
             chart === "lines" ? (
-              <LineChart data={data} config={chartConfig} style={{ height, minHeight: 0 }} margins={{ top: 6, right: 0, bottom: 0, left: 0 }} animate>
-                {/* Biggest platform drawn last so its line sits on top. */}
-                {[...entries].reverse().map((entry) => (
-                  <Line key={entry.platform} dataKey={entry.platform} />
+              <AreaChart data={data} config={chartConfig} style={{ height, minHeight: 0 }} margins={{ top: 6, right: 0, bottom: 0, left: 0 }} animate>
+                {/* Biggest platform first so the smaller areas draw over it. */}
+                {entries.map((entry) => (
+                  <Area key={entry.platform} dataKey={entry.platform} variant="gradient" />
                 ))}
                 <Tooltip labelKey="label" valueFormatter={(value) => grouped(value)} />
-              </LineChart>
+              </AreaChart>
             ) : (
               <BarChart
                 data={data}

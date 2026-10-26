@@ -28,6 +28,11 @@ export const PLATFORM_COLOR: Record<Platform, `#${string}`> = {
   linkedin: "#4C8DFF",
 };
 
+/** The colour a chart uses: the platform's own when it shows one platform, coral for all of them. */
+export function accentFor(platform: Platform | "all", fallback: `#${string}`): `#${string}` {
+  return platform === "all" ? fallback : PLATFORM_COLOR[platform];
+}
+
 export function isPlatform(value: unknown): value is Platform {
   return typeof value === "string" && (PLATFORMS as readonly string[]).includes(value);
 }

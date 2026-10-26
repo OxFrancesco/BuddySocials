@@ -23,7 +23,7 @@ export type PlatformFilter = Platform | "all";
 /** How the platform mix widget draws: overlapping lines, stacked days, side-by-side weeks, or one bar per platform. */
 export const MIX_CHARTS = ["lines", "days", "weeks", "bars"] as const;
 export type MixChart = (typeof MIX_CHARTS)[number];
-export const MIX_CHART_LABEL: Record<MixChart, string> = { lines: "Lines", days: "Days", weeks: "Weeks", bars: "Platforms" };
+export const MIX_CHART_LABEL: Record<MixChart, string> = { lines: "Areas", days: "Days", weeks: "Weeks", bars: "Platforms" };
 
 export type WidgetConfig = {
   metric: DashboardMetric;

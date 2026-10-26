@@ -4,12 +4,11 @@ import { Pressable, View } from "react-native";
 import { Sparkline } from "react-native-dither-kit";
 import { api } from "../../convex/_generated/api";
 import { compact, relativeTime } from "@shared/format";
-import { PLATFORM_TAG } from "@shared/platforms";
+import { PLATFORM_COLOR, PLATFORM_TAG } from "@shared/platforms";
 import { useHour, useNow, useToday } from "@/lib/hooks";
 import { GoalCard } from "@/ui/goal-card";
 import { Thumb } from "@/ui/thumb";
 import { Body, Figure, Label } from "@/ui/text";
-import { color } from "@/theme";
 import { Empty, Loading, TILE_PAD } from "./frame";
 import type { WidgetBodyProps } from "./stats";
 
@@ -91,7 +90,7 @@ export function LatestPostBody({ config, rows }: WidgetBodyProps) {
       </View>
       {rows > 1 && curve.length > 2 ? (
         <View style={{ flex: 1, marginHorizontal: -TILE_PAD }}>
-          <Sparkline data={curve} color={color.coral} variant="gradient" animate style={{ flex: 1, minHeight: 0 }} />
+          <Sparkline data={curve} color={PLATFORM_COLOR[post.platform]} variant="gradient" animate style={{ flex: 1, minHeight: 0 }} />
         </View>
       ) : null}
       <View style={{ flex: rows > 1 ? 0 : 1, flexDirection: "row", gap: 16, alignItems: "flex-end" }}>
@@ -104,7 +103,7 @@ export function LatestPostBody({ config, rows }: WidgetBodyProps) {
         {rows === 1 && curve.length > 2 ? (
           // One row: the growth curve fills the space beside the numbers, out to the tile edge.
           <View style={{ flex: 1, alignSelf: "stretch", marginRight: -TILE_PAD, marginBottom: -TILE_PAD, marginTop: 4 }}>
-            <Sparkline data={curve} color={color.coral} variant="gradient" animate style={{ flex: 1, minHeight: 0 }} />
+            <Sparkline data={curve} color={PLATFORM_COLOR[post.platform]} variant="gradient" animate style={{ flex: 1, minHeight: 0 }} />
           </View>
         ) : null}
       </View>
