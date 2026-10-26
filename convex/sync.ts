@@ -14,7 +14,7 @@ import { internalAction, type ActionCtx } from "./_generated/server";
 import { adapterFor, openCredential, sealCredential, socialFor, supports } from "./social/client";
 import { refreshIfNeeded } from "./social/oauth";
 import type { DemoNative } from "./social/demo";
-import { countersFrom, extractPost, followersFrom, type ExtractedPost } from "./social/extract";
+import { countersFrom, extractComment, extractPost, followersFrom, type ExtractedPost } from "./social/extract";
 import { addDays, dayKey } from "../shared/format";
 import type { Platform } from "../shared/platforms";
 
@@ -22,6 +22,8 @@ const DAY = 86_400_000;
 const POST_LIMIT = 50;
 const COMMENT_WINDOW = 30 * DAY;
 const COMMENTS_PER_POST = 50;
+/** Largest page each platform accepts for its post list. */
+const PAGE_SIZE: Partial<Record<Platform, number>> = { tiktok: 20 };
 const CHUNK = 25;
 
 /** Report metric names per source. YouTube Analytics uses its own names; demo uses ours. */
@@ -61,6 +63,7 @@ function errorMessage(error: unknown): { message: string; reconnect: boolean } {
       rate_limited: "The platform asked us to slow down. Trying again later.",
       unsupported_capability: "This platform does not offer that data.",
     };
+    if (/HTTP 402/.test(error.message)) return { message: "The developer account is out of API credits.", reconnect: false };
     return { message: friendly[error.code] ?? error.message, reconnect };
   }
   return { message: error instanceof Error ? error.message : "Sync failed.", reconnect: false };
@@ -96,6 +99,19 @@ export const syncAccount = internalAction({
     const manifest = adapter.capabilities;
     const ref = connectedAccountRef({ backend: "default", platform, accountId: account.platformAccountId });
     const now = Date.now();
+    // A part the platform won't share (missing permission, not offered) is skipped, not fatal.
+    const limited: string[] = [];
+    async function part<T>(name: string, run: () => Promise<T>): Promise<T | undefined> {
+      try {
+        return await run();
+      } catch (error) {
+        if (error instanceof SocialError && (error.code === "missing_permission" || error.code === "unsupported_capability")) {
+          limited.push(name);
+          return undefined;
+        }
+        throw error;
+      }
+    }
 
     try {
       // 1. Days, when the platform reports them (YouTube Analytics; demo).
@@ -103,13 +119,15 @@ export const syncAccount = internalAction({
       if (hasReport) {
         const names = REPORT_METRICS[adapter.id === "demo" ? "demo" : platform] ?? {};
         const today = dayKey(now);
-        const report = await social.analytics.getReport(ref, {
-          from: addDays(today, args.backfill ? -179 : -6),
-          to: today,
-          metrics: Object.keys(names),
-          dimensions: ["day"],
-        });
-        const rows: DayRow[] = report.rows.flatMap((row) => {
+        const report = await part("daily stats", () =>
+          social.analytics.getReport(ref, {
+            from: addDays(today, args.backfill ? -179 : -6),
+            to: today,
+            metrics: Object.keys(names),
+            dimensions: ["day"],
+          }),
+        );
+        const rows: DayRow[] = (report?.rows ?? []).flatMap((row) => {
           const day = row.dimensions["day"];
           if (typeof day !== "string") return [];
           const out: DayRow = { day, views: 0, likes: 0, comments: 0, shares: 0, saves: 0, followers: 0 };
@@ -119,20 +137,22 @@ export const syncAccount = internalAction({
           }
           return [out];
         });
-        for (const part of chunks(rows, 60)) {
-          await ctx.runMutation(internal.ingest.days, { accountId: account._id, rows: part });
+        for (const batch of chunks(rows, 60)) {
+          await ctx.runMutation(internal.ingest.days, { accountId: account._id, rows: batch });
         }
       }
 
       // 2. Recent posts and their counters.
       const records: JsonObject[] = [];
-      let cursor: string | undefined;
-      while (records.length < POST_LIMIT) {
-        const page = await social.posts.list(ref, { limit: 25, ...(cursor ? { cursor } : {}) });
-        records.push(...page.items);
-        if (!page.nextCursor || page.items.length === 0) break;
-        cursor = page.nextCursor;
-      }
+      await part("posts", async () => {
+        let cursor: string | undefined;
+        while (records.length < POST_LIMIT) {
+          const page = await social.posts.list(ref, { limit: PAGE_SIZE[platform] ?? 25, ...(cursor ? { cursor } : {}) });
+          records.push(...page.items);
+          if (!page.nextCursor || page.items.length === 0) break;
+          cursor = page.nextCursor;
+        }
+      });
       const posts = records
         .map((record) => extractPost(platform, record))
         .filter((post): post is ExtractedPost => post !== null)
@@ -159,59 +179,66 @@ export const syncAccount = internalAction({
         }
         return { ...post, counters, native, ...(history ? { history } : {}) };
       });
-      for (const part of chunks(withMetrics, CHUNK)) {
+      for (const batch of chunks(withMetrics, CHUNK)) {
         await ctx.runMutation(internal.ingest.posts, {
           accountId: account._id,
           takenAt: now,
           deltaDaily: !hasReport,
-          posts: part,
+          posts: batch,
         });
       }
 
       // 3. Followers.
       let followers: number | undefined;
       if (supports(manifest, "analytics.account.read", platform)) {
-        followers = followersFrom(await social.analytics.getAccountMetrics(ref));
+        const metrics = await part("followers", () => social.analytics.getAccountMetrics(ref));
+        followers = metrics ? followersFrom(metrics) : undefined;
         if (followers !== undefined) {
           await ctx.runMutation(internal.ingest.followers, { accountId: account._id, total: followers, takenAt: now });
         }
       }
 
-      // 4. Comments on posts from the last 30 days.
+      // 4. Comments.
       if (supports(manifest, "comments.read", platform)) {
-        const recent = posts.filter((post) => now - post.publishedAt < COMMENT_WINDOW);
+        // Last 30 days, plus the latest few posts so a quiet month still fills the inbox. X bills every read.
+        const latest = platform === "x" ? [] : [...posts].sort((a, b) => b.publishedAt - a.publishedAt).slice(0, 10);
+        const recent = [...new Map([...posts.filter((post) => now - post.publishedAt < COMMENT_WINDOW), ...latest].map((post) => [post.platformPostId, post])).values()];
         const ownHandle = account.handle.replace(/^@/, "").toLowerCase();
+        // Some posts have comments turned off; only flag comments when every post refuses them.
+        let refused = 0;
         const lists = await mapLimit(recent, 4, async (post) => {
-          const page = await social.comments.list(platformPostRef({ ...ref, postId: post.platformPostId }), {
-            limit: COMMENTS_PER_POST,
-          });
-          return page.items.flatMap((item) => {
-            const id = typeof item.id === "string" ? item.id : undefined;
-            const text = typeof item.text === "string" ? item.text : undefined;
-            const created = typeof item.createdAt === "string" ? Date.parse(item.createdAt) : NaN;
-            if (!id || !text || !Number.isFinite(created)) return [];
-            const handle = typeof item.authorHandle === "string" ? item.authorHandle : undefined;
-            if (handle !== undefined && handle.replace(/^@/, "").toLowerCase() === ownHandle) return [];
-            const likes = item["likeCount"];
+          const page = await part("comments", () =>
+            social.comments.list(platformPostRef({ ...ref, postId: post.platformPostId }), { limit: COMMENTS_PER_POST }),
+          );
+          if (page === undefined) refused += 1;
+          return (page?.items ?? []).flatMap((item) => {
+            const comment = extractComment(item, now);
+            if (comment === null) return [];
+            const own =
+              comment.authorId === account.platformAccountId ||
+              comment.authorHandle?.replace(/^@/, "").toLowerCase() === ownHandle ||
+              comment.authorName?.toLowerCase() === account.displayName.toLowerCase();
+            if (own) return [];
             return [
               {
                 platformPostId: post.platformPostId,
-                platformCommentId: id,
-                ...(typeof item.parentId === "string" ? { parentId: item.parentId } : {}),
-                authorName: (typeof item.authorName === "string" ? item.authorName : handle) ?? "Someone",
-                ...(handle !== undefined ? { authorHandle: handle } : {}),
-                text,
-                publishedAt: created,
-                ...(typeof likes === "number" ? { likeCount: likes } : {}),
+                platformCommentId: comment.id,
+                ...(comment.parentId ? { parentId: comment.parentId } : {}),
+                authorName: comment.authorName ?? comment.authorHandle ?? "Someone",
+                ...(comment.authorHandle ? { authorHandle: comment.authorHandle } : {}),
+                text: comment.text,
+                publishedAt: comment.publishedAt,
+                ...(comment.likeCount !== undefined ? { likeCount: comment.likeCount } : {}),
               },
             ];
           });
         });
-        for (const part of chunks(lists.flat(), 100)) {
+        if (refused < recent.length) limited.splice(0, limited.length, ...limited.filter((name) => name !== "comments"));
+        for (const batch of chunks(lists.flat(), 100)) {
           await ctx.runMutation(internal.ingest.comments, {
             accountId: account._id,
             platform,
-            items: part,
+            items: batch,
             ...(args.backfill ? { doneBefore: now - (adapter.id === "demo" ? 1 : 3) * DAY } : {}),
           });
         }
@@ -219,6 +246,7 @@ export const syncAccount = internalAction({
 
       await ctx.runMutation(internal.accounts.finishSync, {
         accountId: account._id,
+        limited: [...new Set(limited)],
         ...(followers !== undefined ? { followers } : {}),
       });
     } catch (error) {

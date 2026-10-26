@@ -69,12 +69,6 @@ export default function Accounts() {
         </View>
       ) : null}
 
-      {available && PLATFORMS.some((platform) => !available[platform]) ? (
-        <Label size={10} tone="faint" style={{ marginBottom: 8 }}>
-          Connect appears for a platform once its developer app is added on the server
-        </Label>
-      ) : null}
-
       {PLATFORMS.map((platform) => {
         const account = accounts?.find((candidate) => candidate.platform === platform);
         const canConnect = available?.[platform] === true;
@@ -83,6 +77,7 @@ export default function Accounts() {
           if (account.status === "syncing") status = "Syncing";
           else if (account.status === "reconnect") status = "Sign in again";
           else if (account.status === "error") status = account.lastError ?? "Sync failed";
+          else if (account.limited?.length) status = `No access to ${account.limited.join(", ")}`;
           else status = account.source === "demo" ? "Demo data" : "Connected";
         }
         const details = account

@@ -25,6 +25,8 @@ export default defineSchema({
     followers: v.optional(v.number()),
     lastSyncedAt: v.optional(v.number()),
     lastError: v.optional(v.string()),
+    /** Parts of the account the platform doesn't share with this app, e.g. LinkedIn posts before approval. */
+    limited: v.optional(v.array(v.string())),
   })
     .index("by_owner", ["owner"])
     .index("by_owner_and_platform", ["owner", "platform"]),

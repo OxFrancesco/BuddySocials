@@ -138,3 +138,37 @@ export function followersFrom(metrics: readonly MetricValue[]): number | undefin
   }
   return undefined;
 }
+
+export type ExtractedComment = {
+  id: string;
+  text: string;
+  publishedAt: number;
+  authorName?: string;
+  authorHandle?: string;
+  authorId?: string;
+  parentId?: string;
+  likeCount?: number;
+};
+
+/** Reads the record each adapter's comments.list returns. Field names differ per platform. */
+export function extractComment(row: JsonObject, now: number): ExtractedComment | null {
+  const id = str(row["id"]) ?? str(row["commentUrn"]);
+  const text = str(row["text"]) ?? str(row["textDisplay"]);
+  if (!id || !text) return null;
+  // LinkedIn comments carry no timestamp in this response; treat them as seen now.
+  const publishedAt = time(row["createdAt"]) ?? time(row["publishedAt"]) ?? time(row["created_at"]) ?? time(row["timestamp"]) ?? now;
+  const authorName = str(row["authorName"]) ?? str(row["authorDisplayName"]);
+  const authorHandle = str(row["authorHandle"]) ?? str(row["username"]);
+  const authorId = str(row["author_id"]) ?? str(row["actor"]);
+  const likes = row["likeCount"] ?? obj(row["public_metrics"])["like_count"];
+  return {
+    id,
+    text,
+    publishedAt,
+    ...(authorName ? { authorName } : {}),
+    ...(authorHandle ? { authorHandle } : {}),
+    ...(authorId ? { authorId } : {}),
+    ...(str(row["parentId"]) ? { parentId: str(row["parentId"])! } : {}),
+    ...(typeof likes === "number" ? { likeCount: likes } : {}),
+  };
+}

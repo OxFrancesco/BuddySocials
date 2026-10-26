@@ -32,6 +32,7 @@ export const list = query({
       followers: account.followers ?? null,
       lastSyncedAt: account.lastSyncedAt ?? null,
       lastError: account.lastError ?? null,
+      limited: account.limited ?? null,
     }));
   },
 });
@@ -170,6 +171,7 @@ export const finishSync = internalMutation({
     error: v.optional(v.string()),
     reconnect: v.optional(v.boolean()),
     followers: v.optional(v.number()),
+    limited: v.optional(v.array(v.string())),
   },
   handler: async (ctx, args) => {
     const account = await ctx.db.get("accounts", args.accountId);
@@ -185,6 +187,7 @@ export const finishSync = internalMutation({
       status: "connected",
       lastSyncedAt: Date.now(),
       lastError: undefined,
+      limited: args.limited !== undefined && args.limited.length > 0 ? args.limited : undefined,
       ...(args.followers !== undefined ? { followers: args.followers } : {}),
     });
   },
