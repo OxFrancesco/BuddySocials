@@ -39,3 +39,9 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# codeview reference codebases
+resources/
+
+# e2e screenshots and recordings
+e2e/artifacts/

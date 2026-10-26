@@ -1,0 +1,116 @@
+diff --git a/node_modules/react-native-dither-kit/.bun-tag-6863750248bf477 b/.bun-tag-6863750248bf477
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/lib/module/math.js b/lib/module/math.js
+index 838ac7d343a2d4f7977de3219fe406109eb65619..f454c2670406e60ffa19b443eeabb506168f25ed 100644
+--- a/lib/module/math.js
++++ b/lib/module/math.js
+@@ -72,6 +72,9 @@ export function readLabel(row, key) {
+ 
+ /** Resolve a named color or raw hue to an RGB tuple. */
+ export function fillOf(color) {
++  if (typeof color === "string" && /^#[0-9a-fA-F]{6}$/.test(color)) {
++    return [parseInt(color.slice(1, 3), 16), parseInt(color.slice(3, 5), 16), parseInt(color.slice(5, 7), 16)];
++  }
+   return typeof color === "number" ? hueFill(color) : PALETTE[color];
+ }
+ 
+@@ -299,7 +302,7 @@ export function makeAvatarModel(name, hue, mirror) {
+   return {
+     on,
+     density,
+-    fill: hueFill(hue ?? generatedHue),
++    fill: typeof hue === "string" ? fillOf(hue) : hueFill(hue ?? generatedHue),
+     seed
+   };
+ }
+diff --git a/lib/typescript/src/math.d.ts b/lib/typescript/src/math.d.ts
+index 9d242bab7d12af3d96dd9a963a1a9e2753832e24..1e9dcaca74cca81cbea8b9b150f101027c6e7ecc 100644
+--- a/lib/typescript/src/math.d.ts
++++ b/lib/typescript/src/math.d.ts
+@@ -3,7 +3,7 @@ export type DitherColor = "green" | "blue" | "purple" | "pink" | "orange" | "red
+ /** An RGB color tuple in 8-bit channels. */
+ export type Rgb = readonly [red: number, green: number, blue: number];
+ /** A named palette color or a raw hue (0–360) for chart series. */
+-export type ChartColor = DitherColor | number;
++export type ChartColor = DitherColor | number | `#${string}`;
+ /** A chart series label and palette color. */
+ export type ChartConfigEntry = {
+     readonly label?: string;
+@@ -85,5 +85,5 @@ export declare function fnv1a(value: string): number;
+ /** Deterministic xorshift32 random stream in the half-open [0, 1) range. */
+ export declare function xorshift32(seed: number): () => number;
+ /** Derive the same mirrored 8x8 avatar model for a name on every platform. */
+-export declare function makeAvatarModel(name: string, hue: number | undefined, mirror: AvatarMirror): AvatarModel;
++export declare function makeAvatarModel(name: string, hue: number | `#${string}` | undefined, mirror: AvatarMirror): AvatarModel;
+ //# sourceMappingURL=math.d.ts.map
+\ No newline at end of file
+diff --git a/lib/typescript/src/pixels.d.ts b/lib/typescript/src/pixels.d.ts
+index fbc447431dd19df50cad4ead04f788c52d822cb4..2c63e2a5ffbbc3e7cc48c564e226ab288d71319c 100644
+--- a/lib/typescript/src/pixels.d.ts
++++ b/lib/typescript/src/pixels.d.ts
+@@ -11,7 +11,7 @@ export type GradientDirection = "up" | "down" | "left" | "right";
+ /** Props for a deterministic native dither avatar. */
+ export type DitherAvatarProps = {
+     readonly name: string;
+-    readonly hue?: number;
++    readonly hue?: number | `#${string}`;
+     readonly mirror?: AvatarMirror;
+     readonly size?: number;
+     readonly bloom?: PixelBloom;
+diff --git a/src/math.ts b/src/math.ts
+index b334fb8416c9026733c67ff53fa51e73b5134a50..ef34572272a903679dda042e215a4c53c78ff20f 100644
+--- a/src/math.ts
++++ b/src/math.ts
+@@ -6,7 +6,7 @@ export type DitherColor =
+ export type Rgb = readonly [red: number, green: number, blue: number];
+ 
+ /** A named palette color or a raw hue (0–360) for chart series. */
+-export type ChartColor = DitherColor | number;
++export type ChartColor = DitherColor | number | `#${string}`;
+ 
+ /** A chart series label and palette color. */
+ export type ChartConfigEntry = {
+@@ -103,7 +103,10 @@ export function readLabel(row: object, key: string | undefined): string {
+ 
+ /** Resolve a named color or raw hue to an RGB tuple. */
+ export function fillOf(color: ChartColor): Rgb {
+-  return typeof color === "number" ? hueFill(color) : PALETTE[color];
++  if (typeof color === "string" && /^#[0-9a-fA-F]{6}$/.test(color)) {
++    return [parseInt(color.slice(1, 3), 16), parseInt(color.slice(3, 5), 16), parseInt(color.slice(5, 7), 16)];
++  }
++  return typeof color === "number" ? hueFill(color) : PALETTE[color as DitherColor];
+ }
+ 
+ /** Convert an RGB tuple into a React Native/Skia hex color. */
+@@ -382,7 +385,7 @@ export function xorshift32(seed: number): () => number {
+ /** Derive the same mirrored 8x8 avatar model for a name on every platform. */
+ export function makeAvatarModel(
+   name: string,
+-  hue: number | undefined,
++  hue: number | `#${string}` | undefined,
+   mirror: AvatarMirror,
+ ): AvatarModel {
+   const seed = fnv1a(name);
+@@ -410,7 +413,7 @@ export function makeAvatarModel(
+   return {
+     on,
+     density,
+-    fill: hueFill(hue ?? generatedHue),
++    fill: typeof hue === "string" ? fillOf(hue) : hueFill(hue ?? generatedHue),
+     seed,
+   };
+ }
+diff --git a/src/pixels.tsx b/src/pixels.tsx
+index c890dfc8d53b793e14753d6dc0902cea86ede2fa..7f8e83be3eae7ef91680d24b3971263da2ab512d 100644
+--- a/src/pixels.tsx
++++ b/src/pixels.tsx
+@@ -52,7 +52,7 @@ export type GradientDirection = "up" | "down" | "left" | "right";
+ /** Props for a deterministic native dither avatar. */
+ export type DitherAvatarProps = {
+   readonly name: string;
+-  readonly hue?: number;
++  readonly hue?: number | `#${string}`;
+   readonly mirror?: AvatarMirror;
+   readonly size?: number;
+   readonly bloom?: PixelBloom;
