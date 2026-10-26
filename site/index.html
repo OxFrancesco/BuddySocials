@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<title>BuddySocials</title>
+<meta name="description" content="An Android app with views, native post stats and comments from YouTube, Instagram, TikTok, X and LinkedIn, on a home screen you build from widgets.">
+<meta property="og:title" content="BuddySocials">
+<meta property="og:description" content="Views, native post stats and comments from five platforms, on a home screen you build from widgets.">
+<meta property="og:image" content="media/demo-poster.webp">
+<link rel="icon" href="icon.png">
+<link rel="preload" href="fonts/ChakraPetch-Bold.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/IBMPlexMono-Regular.woff2" as="font" type="font/woff2" crossorigin>
+<style>
+@font-face { font-family: "Chakra Petch"; src: url(fonts/ChakraPetch-Bold.woff2) format("woff2"); font-weight: 700; font-display: swap; }
+@font-face { font-family: "Plex Mono"; src: url(fonts/IBMPlexMono-Regular.woff2) format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Plex Mono"; src: url(fonts/IBMPlexMono-Bold.woff2) format("woff2"); font-weight: 700; font-display: swap; }
+
+:root {
+  --bg: #000;
+  --fg: #fff;
+  --coral: #d6544b;
+  --line: #292929;
+  --mute: #8c8c8c;
+  --ease: cubic-bezier(0.23, 1, 0.32, 1);
+  --pad: clamp(20px, 5vw, 64px);
+  --display: "Chakra Petch", system-ui, sans-serif;
+  --mono: "Plex Mono", ui-monospace, monospace;
+}
+* { box-sizing: border-box; margin: 0; }
+html { background: var(--bg); color: var(--fg); -webkit-text-size-adjust: 100%; }
+body { font: 400 15px/1.6 var(--mono); min-height: 100dvh; overflow-x: hidden; -webkit-font-smoothing: antialiased; }
+img, video, canvas { display: block; max-width: 100%; }
+a { color: inherit; }
+::selection { background: var(--coral); color: var(--fg); }
+
+h1, h2 { font-family: var(--display); font-weight: 700; text-transform: uppercase; letter-spacing: -0.02em; line-height: 0.92; }
+h2 { font-size: clamp(36px, 6vw, 64px); }
+h2 em { font-style: normal; color: var(--coral); }
+p { max-width: 42ch; color: #d9d9d9; }
+
+.wrap { width: min(1200px, 100%); margin-inline: auto; padding-inline: var(--pad); }
+
+/* Square frame with a hard white shadow, as in the app. */
+.frame { border: 3px solid var(--fg); box-shadow: 8px 8px 0 var(--fg); background: var(--bg); overflow: hidden; }
+
+/* ---------------------------------------------------------------- hero */
+.hero { display: grid; grid-template-columns: minmax(0, 1fr) clamp(280px, 30vw, 400px); gap: clamp(40px, 7vw, 112px); align-items: center; padding-block: clamp(48px, 10vh, 120px) clamp(64px, 12vh, 140px); }
+.brand { display: flex; align-items: center; gap: 16px; margin-bottom: clamp(32px, 6vh, 64px); }
+.brand img { width: 56px; height: 56px; image-rendering: pixelated; }
+.brand span { font: 700 20px/1 var(--display); letter-spacing: 0.02em; }
+.hero h1 { font-size: clamp(48px, 7vw, 112px); }
+.hero h1 em { font-style: normal; color: var(--coral); display: block; }
+.hero p { margin-top: 28px; font-size: 17px; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 32px; padding: 0; list-style: none; }
+.chips li { border: 2px solid var(--line); padding: 6px 12px; font: 700 12px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--mute); animation: chip 200ms var(--ease) both; animation-delay: calc(500ms + var(--i) * 160ms); }
+@keyframes chip { to { background: var(--coral); border-color: var(--coral); color: var(--fg); } }
+
+.player { position: relative; aspect-ratio: 9 / 16; }
+.player video { width: 100%; height: 100%; object-fit: cover; }
+.sound { position: absolute; right: 12px; top: 12px; border: 2px solid var(--fg); background: var(--bg); color: var(--fg); font: 700 12px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; padding: 10px 12px; cursor: pointer; box-shadow: 3px 3px 0 var(--fg); transition: transform 120ms var(--ease), box-shadow 120ms var(--ease); }
+.sound:active { transform: translate(3px, 3px); box-shadow: 0 0 0 var(--fg); }
+.sound[aria-pressed="true"] { background: var(--coral); border-color: var(--coral); box-shadow: 3px 3px 0 var(--fg); }
+
+/* ------------------------------------------------------------ features */
+.feature { display: grid; grid-template-columns: minmax(240px, 1fr) 2fr; gap: clamp(32px, 6vw, 96px); padding-block: clamp(64px, 12vh, 128px); border-top: 2px solid var(--line); }
+.feature .copy { position: sticky; top: 48px; align-self: start; }
+.feature .copy p { margin-top: 20px; }
+.shots { display: flex; gap: clamp(16px, 2.5vw, 32px); align-items: flex-start; }
+.shots .frame { flex: 1 1 0; min-width: 0; max-width: 300px; }
+.shots .frame:nth-child(2) { margin-top: 64px; }
+.shots .frame:nth-child(3) { margin-top: 128px; }
+.shots img { width: 100%; height: auto; }
+
+.widgets { columns: 2; column-gap: 20px; }
+.widgets img { width: 100%; height: auto; margin-bottom: 20px; break-inside: avoid; border-radius: 22px; }
+
+/* ---------------------------------------------------------------- end */
+footer { position: relative; border-top: 2px solid var(--line); padding-block: clamp(96px, 18vh, 200px) calc(clamp(140px, 22vh, 240px) + 48px); overflow: hidden; }
+footer canvas { position: absolute; inset: auto 0 0 0; width: 100%; height: clamp(140px, 22vh, 240px); image-rendering: pixelated; pointer-events: none; }
+footer .wrap { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 24px; }
+footer h2 { font-size: clamp(48px, 9vw, 120px); }
+footer a { font-weight: 700; text-decoration: none; border-bottom: 2px solid var(--coral); padding-bottom: 2px; }
+footer a:hover { color: var(--coral); }
+
+/* ------------------------------------------------------------- motion */
+.rise { opacity: 0; transform: translateY(16px); transition: opacity 500ms var(--ease), transform 500ms var(--ease); transition-delay: calc(var(--d, 0) * 80ms); }
+.rise.in { opacity: 1; transform: none; }
+.load { animation: load 600ms var(--ease) both; animation-delay: calc(var(--d, 0) * 90ms); }
+@keyframes load { from { opacity: 0; transform: translateY(16px); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .rise, .load { opacity: 1; transform: none; transition: none; animation: none; }
+  .chips li { animation-duration: 1ms; animation-delay: 0ms; }
+}
+
+/* ------------------------------------------------------------- narrow */
+@media (max-width: 860px) {
+  .hero { grid-template-columns: 1fr; }
+  .player { width: min(100%, 380px); justify-self: center; }
+  .feature { grid-template-columns: 1fr; }
+  .feature .copy { position: static; }
+  .shots .frame:nth-child(n) { margin-top: 0; }
+  .shots .frame { box-shadow: 5px 5px 0 var(--fg); }
+}
+@media (max-width: 520px) {
+  .shots { overflow-x: auto; scroll-snap-type: x mandatory; margin-inline: calc(var(--pad) * -1); padding: 0 var(--pad) 12px; scrollbar-width: none; }
+  .shots::-webkit-scrollbar { display: none; }
+  .shots .frame { flex: 0 0 72%; scroll-snap-align: center; }
+  .widgets { columns: 1; }
+}
+</style>
+</head>
+<body>
+
+<main>
+  <section class="wrap hero">
+    <div>
+      <div class="brand load" style="--d:0"><img src="icon.png" alt=""><span>BUDDYSOCIALS</span></div>
+      <h1 class="load" style="--d:1">Five platforms. <em>One home.</em></h1>
+      <p class="load" style="--d:2">An Android app with views, native post stats and comments from every account you post on, on a home screen you build from widgets.</p>
+      <ul class="chips load" style="--d:3" aria-label="Platforms">
+        <li style="--i:0">YouTube</li>
+        <li style="--i:1">Instagram</li>
+        <li style="--i:2">TikTok</li>
+        <li style="--i:3">X</li>
+        <li style="--i:4">LinkedIn</li>
+      </ul>
+    </div>
+    <div class="player frame load" style="--d:2">
+      <video src="media/demo.mp4" poster="media/demo-poster.webp" autoplay muted loop playsinline preload="metadata" aria-label="BuddySocials demo"></video>
+      <button class="sound" type="button" aria-pressed="false">Sound</button>
+    </div>
+  </section>
+
+  <section class="wrap feature">
+    <div class="copy rise">
+      <h2>Made of <em>widgets</em></h2>
+      <p>Resize a widget, change what it measures, add more, drag them anywhere. Each one picks its own metric, platform and time range.</p>
+    </div>
+    <div class="shots">
+      <div class="frame rise" style="--d:0"><img src="media/home.webp" alt="Home with views and interactions widgets" width="720" height="1054" loading="lazy"></div>
+      <div class="frame rise" style="--d:1"><img src="media/edit.webp" alt="Edit mode with size and remove controls" width="720" height="1054" loading="lazy"></div>
+      <div class="frame rise" style="--d:2"><img src="media/editor.webp" alt="Widget editor with size, metric and range" width="720" height="1054" loading="lazy"></div>
+    </div>
+  </section>
+
+  <section class="wrap feature">
+    <div class="copy rise">
+      <h2>Native <em>numbers</em></h2>
+      <p>Each post shows what its platform's own dashboard shows. Watch time and average view duration on YouTube. Reach, saves and profile visits on Instagram. Watched-in-full rate on TikTok.</p>
+    </div>
+    <div class="shots">
+      <div class="frame rise" style="--d:0"><img src="media/posts.webp" alt="Posts from every platform with their stats" width="720" height="1054" loading="lazy"></div>
+      <div class="frame rise" style="--d:1"><img src="media/post.webp" alt="YouTube post with watch time and average view duration" width="720" height="1054" loading="lazy"></div>
+    </div>
+  </section>
+
+  <section class="wrap feature">
+    <div class="copy rise">
+      <h2>One <em>inbox</em></h2>
+      <p>Comments from all five platforms in one list. Reply in place and the comment leaves the waiting list.</p>
+    </div>
+    <div class="shots">
+      <div class="frame rise" style="--d:0"><img src="media/inbox-list.webp" alt="Comments waiting for a reply" width="720" height="1054" loading="lazy"></div>
+      <div class="frame rise" style="--d:1"><img src="media/inbox.webp" alt="Replying to a comment from the inbox" width="720" height="1054" loading="lazy"></div>
+    </div>
+  </section>
+
+  <section class="wrap feature">
+    <div class="copy rise">
+      <h2><em>Goals</em></h2>
+      <p>Pick a metric, a platform and a window: this week, this month or the next 30 days. The tick on each bar marks where you should be by today. Hit the target and the screen fills up.</p>
+    </div>
+    <div class="shots">
+      <div class="frame rise" style="--d:0"><img src="media/goals.webp" alt="Goals with progress bars and pace ticks" width="720" height="1054" loading="lazy"></div>
+      <div class="frame rise" style="--d:1"><img src="media/goal-hit.webp" alt="Goal hit: 1,200 likes" width="720" height="1054" loading="lazy"></div>
+    </div>
+  </section>
+
+  <section class="wrap feature">
+    <div class="copy rise">
+      <h2>On your <em>home screen</em></h2>
+      <p>Six Android widgets. Make one bigger and it shows more: per-platform rows, longer bars, streaks.</p>
+    </div>
+    <div class="widgets">
+      <img class="rise" style="--d:0" src="media/widget-views.webp" alt="Views widget" width="1042" height="492" loading="lazy">
+      <img class="rise" style="--d:1" src="media/widget-platforms-tall.webp" alt="Platforms widget, expanded" width="1042" height="770" loading="lazy">
+      <img class="rise" style="--d:2" src="media/widget-goals.webp" alt="Goals widget" width="1042" height="492" loading="lazy">
+      <img class="rise" style="--d:1" src="media/widget-inbox.webp" alt="Inbox widget" width="1042" height="492" loading="lazy">
+      <img class="rise" style="--d:2" src="media/widget-latest-post.webp" alt="Latest post widget" width="1042" height="492" loading="lazy">
+      <img class="rise" style="--d:3; width:46%" src="media/widget-pulse.webp" alt="Pulse widget" width="476" height="492" loading="lazy">
+    </div>
+  </section>
+</main>
+
+<footer>
+  <canvas aria-hidden="true"></canvas>
+  <div class="wrap">
+    <h2 class="rise">Buddy<em>socials</em></h2>
+    <p class="rise" style="--d:1">Built on <a href="https://github.com/opencoredev/social-sdk">Leo's Social SDK</a></p>
+  </div>
+</footer>
+
+<script>
+// Sound toggle for the demo.
+const video = document.querySelector(".player video");
+const sound = document.querySelector(".sound");
+sound.addEventListener("click", () => {
+  video.muted = !video.muted;
+  if (!video.muted && video.currentTime > 1) video.currentTime = 0;
+  video.play();
+  sound.setAttribute("aria-pressed", String(!video.muted));
+});
+
+// Reveal on scroll.
+const io = new IntersectionObserver((entries) => {
+  for (const e of entries) if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); }
+}, { rootMargin: "0px 0px -10% 0px" });
+document.querySelectorAll(".rise").forEach((el) => io.observe(el));
+
+// Coral rising out of a 4x4 Bayer dither, like the goal celebration.
+const canvas = document.querySelector("footer canvas");
+const bayer = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+function dither() {
+  const cell = 6;
+  const w = Math.ceil(canvas.clientWidth / cell);
+  const h = Math.ceil(canvas.clientHeight / cell);
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  const img = ctx.createImageData(w, h);
+  for (let y = 0; y < h; y++) {
+    const level = Math.pow(y / h, 1.3);
+    for (let x = 0; x < w; x++) {
+      if (level * 16 > bayer[(y % 4) * 4 + (x % 4)] + 0.5) {
+        const i = (y * w + x) * 4;
+        img.data[i] = 214; img.data[i + 1] = 84; img.data[i + 2] = 75; img.data[i + 3] = 255;
+      }
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+dither();
+new ResizeObserver(dither).observe(canvas);
+</script>
+</body>
+</html>
