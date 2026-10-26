@@ -70,3 +70,35 @@ export function ditherAreaSvg(values: readonly number[], { width, height, cell =
   }
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${columns * cell}" height="${rows * cell}" viewBox="0 0 ${columns * cell} ${rows * cell}" shape-rendering="crispEdges">${rects.join("")}</svg>`;
 }
+
+/** A horizontal bar, solid coral with a dithered leading edge, for ranked rows. */
+export function ditherBarSvg({ width, height, share, color, cell = 3 }: { width: number; height: number; share: number; color: string; cell?: number }): string {
+  const columns = Math.max(1, Math.floor(width / cell));
+  const rows = Math.max(1, Math.floor(height / cell));
+  const filled = Math.max(1, Math.round(columns * Math.max(0, Math.min(1, share))));
+  const fade = Math.min(6, filled);
+  const solid = filled - fade;
+  // The solid part is one rect so scaling can't open seams between rows.
+  const rects: string[] = solid > 0 ? [`<rect x="0" y="0" width="${solid * cell}" height="${rows * cell}" fill="${color}"/>`] : [];
+  for (let row = 0; row < rows; row++) {
+    for (let column = solid; column < filled; column++) {
+      const density = 1 - (column - solid + 1) / (fade + 1);
+      if ((BAYER4[row % 4]![column % 4]! + 0.5) / 16 < density) {
+        rects.push(`<rect x="${column * cell}" y="${row * cell}" width="${cell}" height="${cell}" fill="${color}"/>`);
+      }
+    }
+  }
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${columns * cell}" height="${rows * cell}" viewBox="0 0 ${columns * cell} ${rows * cell}" shape-rendering="crispEdges">${rects.join("")}</svg>`;
+}
+
+/** Goal progress inside a 2px outline, with a white tick where the pace says you should be. */
+export function goalBarSvg({ width, height, progress, pace, color, line }: { width: number; height: number; progress: number; pace?: number; color: string; line: string }): string {
+  const inner = Math.max(0, width - 4);
+  const fill = Math.round(inner * Math.max(0, Math.min(1, progress)));
+  const tick = pace !== undefined && pace > 0 && pace < 1 && progress < 1 ? Math.round(2 + inner * pace) : null;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" shape-rendering="crispEdges">
+<rect x="1" y="1" width="${width - 2}" height="${height - 2}" fill="none" stroke="${line}" stroke-width="2"/>
+${fill > 0 ? `<rect x="2" y="2" width="${fill}" height="${height - 4}" fill="${color}"/>` : ""}
+${tick !== null ? `<rect x="${tick - 1}" y="0" width="2" height="${height}" fill="#FFFFFF"/>` : ""}
+</svg>`;
+}

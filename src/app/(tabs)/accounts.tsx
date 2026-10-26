@@ -134,8 +134,8 @@ export default function Accounts() {
                 testID={`pin-${name}`}
                 size="sm"
                 variant="outline"
-                label={name}
-                accessibilityLabel={`Add ${name} widget to the home screen`}
+                label={name === "LatestPost" ? "Latest post" : name}
+                accessibilityLabel={`Add ${name === "LatestPost" ? "Latest post" : name} widget to the home screen`}
                 onPress={() =>
                   void requestPinWidget({ widgetName: name }).then((shown) => {
                     if (!shown) setNotice({ text: "This launcher can't add widgets from apps. Long-press the home screen instead.", error: true });

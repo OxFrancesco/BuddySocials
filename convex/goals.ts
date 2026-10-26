@@ -96,69 +96,74 @@ export type GoalView = {
   celebrate: boolean;
 };
 
+/** Every goal with its live progress, sorted so the ones needing attention come first. */
+export async function loadGoals(ctx: QueryCtx, owner: string, today: string): Promise<{ goals: GoalView[]; hits: number }> {
+  const goals = await ctx.db
+    .query("goals")
+    .withIndex("by_owner", (q) => q.eq("owner", owner))
+    .take(50);
+  let hits = 0;
+  const views: GoalView[] = [];
+  for (const goal of goals) {
+    const window = currentWindow(goal, today);
+    const created = new Date(goal.createdAt).toISOString().slice(0, 10);
+    // One read covers the current window and the streak lookback.
+    let from = window.start;
+    const earlier: { start: string; end: string }[] = [];
+    if (goal.repeat) {
+      let previous = previousWindow(goal, window.start);
+      for (let i = 0; i < STREAK_LOOKBACK && previous.end >= created; i++) {
+        earlier.push(previous);
+        from = previous.start;
+        previous = previousWindow(goal, previous.start);
+      }
+    }
+    const values = await dailyValues(ctx, goal, from, window.end < today ? window.end : today);
+    const value = sumRange(values, window.start, window.end);
+    const pace = goalPace(value, goal.target, window, today);
+    let streak = 0;
+    let goalHits = pace.state === "done" ? 1 : 0;
+    let unbroken = true;
+    for (const period of earlier) {
+      const hit = sumRange(values, period.start, period.end) >= goal.target;
+      if (hit) goalHits++;
+      if (unbroken && hit) streak++;
+      else unbroken = false;
+    }
+    hits += goalHits;
+    views.push({
+      _id: goal._id,
+      title: goalTitle(goal),
+      metric: goal.metric,
+      platform: goal.platform,
+      target: goal.target,
+      period: goal.period,
+      repeat: goal.repeat,
+      startDay: goal.startDay,
+      endDay: goal.endDay,
+      window,
+      value,
+      expected: pace.expected,
+      progress: pace.progress,
+      elapsedShare: pace.elapsedShare,
+      daysLeft: pace.daysLeft,
+      state: pace.state,
+      streak,
+      hits: goalHits,
+      celebrate: pace.state === "done" && goal.celebrated !== window.start,
+    });
+  }
+  const order: Record<GoalState, number> = { behind: 0, ahead: 1, upcoming: 2, done: 3, missed: 4 };
+  views.sort((a, b) => order[a.state] - order[b.state] || b.progress - a.progress);
+  return { goals: views, hits };
+}
+
 export const list = query({
   args: { today: v.string() },
   handler: async (ctx, args): Promise<{ goals: GoalView[]; hits: number } | null> => {
     const owner = await optionalOwner(ctx);
     if (owner === null) return null;
-    const goals = await ctx.db
-      .query("goals")
-      .withIndex("by_owner", (q) => q.eq("owner", owner))
-      .take(50);
-    let hits = 0;
-    const views: GoalView[] = [];
-    for (const goal of goals) {
-      const window = currentWindow(goal, args.today);
-      const created = new Date(goal.createdAt).toISOString().slice(0, 10);
-      // One read covers the current window and the streak lookback.
-      let from = window.start;
-      const earlier: { start: string; end: string }[] = [];
-      if (goal.repeat) {
-        let previous = previousWindow(goal, window.start);
-        for (let i = 0; i < STREAK_LOOKBACK && previous.end >= created; i++) {
-          earlier.push(previous);
-          from = previous.start;
-          previous = previousWindow(goal, previous.start);
-        }
-      }
-      const values = await dailyValues(ctx, goal, from, window.end < args.today ? window.end : args.today);
-      const value = sumRange(values, window.start, window.end);
-      const pace = goalPace(value, goal.target, window, args.today);
-      let streak = 0;
-      let goalHits = pace.state === "done" ? 1 : 0;
-      let unbroken = true;
-      for (const period of earlier) {
-        const hit = sumRange(values, period.start, period.end) >= goal.target;
-        if (hit) goalHits++;
-        if (unbroken && hit) streak++;
-        else unbroken = false;
-      }
-      hits += goalHits;
-      views.push({
-        _id: goal._id,
-        title: goalTitle(goal),
-        metric: goal.metric,
-        platform: goal.platform,
-        target: goal.target,
-        period: goal.period,
-        repeat: goal.repeat,
-        startDay: goal.startDay,
-        endDay: goal.endDay,
-        window,
-        value,
-        expected: pace.expected,
-        progress: pace.progress,
-        elapsedShare: pace.elapsedShare,
-        daysLeft: pace.daysLeft,
-        state: pace.state,
-        streak,
-        hits: goalHits,
-        celebrate: pace.state === "done" && goal.celebrated !== window.start,
-      });
-    }
-    const order: Record<GoalState, number> = { behind: 0, ahead: 1, upcoming: 2, done: 3, missed: 4 };
-    views.sort((a, b) => order[a.state] - order[b.state] || b.progress - a.progress);
-    return { goals: views, hits };
+    return await loadGoals(ctx, owner, args.today);
   },
 });
 

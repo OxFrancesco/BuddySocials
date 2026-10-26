@@ -45,3 +45,9 @@ resources/
 
 # e2e screenshots and recordings
 e2e/artifacts/
+
+# attention machine settings and keys
+.attentionmachine/
+videos/**/public/
+videos/**/export/
+videos/**/node_modules/

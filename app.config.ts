@@ -1,6 +1,23 @@
 import type { ConfigContext, ExpoConfig } from "expo/config";
 import type { WithAndroidWidgetsParams } from "react-native-android-widget";
 
+type HomeWidget = WithAndroidWidgetsParams["widgets"][number];
+
+const W = (name: string, label: string, description: string, cols: number, rows: number, preview: string): HomeWidget => ({
+  name,
+  label,
+  description,
+  minWidth: "110dp",
+  minHeight: "50dp",
+  targetCellWidth: cols,
+  targetCellHeight: rows,
+  maxResizeWidth: "900dp",
+  maxResizeHeight: "900dp",
+  resizeMode: "horizontal|vertical",
+  updatePeriodMillis: 1_800_000,
+  previewImage: `./assets/widget-preview/${preview}.png`,
+});
+
 const homeWidgets: WithAndroidWidgetsParams = {
   fonts: [
     "./assets/fonts/ChakraPetch-Bold.ttf",
@@ -8,42 +25,13 @@ const homeWidgets: WithAndroidWidgetsParams = {
     "./assets/fonts/IBMPlexMono-Bold.ttf",
   ],
   widgets: [
-    {
-      name: "Views",
-      label: "Views",
-      previewImage: "./assets/widget-preview/views.png",
-      description: "Views this week with the daily trend",
-      minWidth: "250dp",
-      minHeight: "110dp",
-      targetCellWidth: 4,
-      targetCellHeight: 2,
-      resizeMode: "horizontal|vertical",
-      updatePeriodMillis: 1_800_000,
-    },
-    {
-      name: "Inbox",
-      label: "Inbox",
-      previewImage: "./assets/widget-preview/inbox.png",
-      description: "Comments waiting for a reply",
-      minWidth: "250dp",
-      minHeight: "110dp",
-      targetCellWidth: 4,
-      targetCellHeight: 2,
-      resizeMode: "horizontal|vertical",
-      updatePeriodMillis: 1_800_000,
-    },
-    {
-      name: "Pulse",
-      label: "Pulse",
-      previewImage: "./assets/widget-preview/pulse.png",
-      description: "This week's views and new followers",
-      minWidth: "110dp",
-      minHeight: "110dp",
-      targetCellWidth: 2,
-      targetCellHeight: 2,
-      resizeMode: "horizontal|vertical",
-      updatePeriodMillis: 1_800_000,
-    },
+    // Every widget resizes from 2x1 up; each one lays itself out for its current size.
+    W("Views", "Views", "Views this week with the daily trend", 4, 2, "views"),
+    W("Pulse", "Pulse", "Views, interactions and new followers this week", 2, 2, "pulse"),
+    W("Platforms", "Platforms", "Views by platform with the change from last week", 4, 2, "platforms"),
+    W("Goals", "Goals", "Progress on your goals", 4, 2, "goals"),
+    W("Inbox", "Inbox", "Comments waiting for a reply", 4, 2, "inbox"),
+    W("LatestPost", "Latest post", "Your newest post and how it is doing", 4, 2, "latest-post"),
   ],
 };
 
@@ -87,10 +75,13 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       {
         android: {
           buildArchs: ["arm64-v8a"],
-          // R8 strips WorkManager's generated Room database, which the home screen widgets rely on.
+          // WorkManager builds its database, workers and input mergers by reflection; R8 must keep them
+          // or background widget renders (resize, scheduled refresh) silently fail.
           extraProguardRules: [
             "-keep class * extends androidx.room.RoomDatabase { <init>(); }",
-            "-keep class androidx.work.impl.** { *; }",
+            "-keep class androidx.work.** { *; }",
+            "-keep class * extends androidx.work.ListenableWorker { public <init>(android.content.Context, androidx.work.WorkerParameters); }",
+            "-keep class * extends androidx.work.InputMerger { public <init>(); }",
             "-keep class com.reactnativeandroidwidget.** { *; }",
           ].join("\n"),
         },
