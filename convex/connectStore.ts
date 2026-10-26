@@ -139,3 +139,10 @@ export const disconnect = mutation({
     await ctx.scheduler.runAfter(0, internal.accounts.purgeAccountData, { accountId: account._id });
   },
 });
+
+export const setPlatformAccountId = internalMutation({
+  args: { accountId: v.id("accounts"), platformAccountId: v.string() },
+  handler: async (ctx, args) => {
+    await ctx.db.patch("accounts", args.accountId, { platformAccountId: args.platformAccountId, status: "syncing", lastError: undefined });
+  },
+});

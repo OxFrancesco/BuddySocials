@@ -86,7 +86,21 @@ async function load(ctx: ActionCtx, accountId: Id<"accounts">) {
     }
   }
   const adapter = adapterFor(loaded.account, credential);
-  return { account: loaded.account, adapter, social: socialFor(adapter) };
+  return { account: loaded.account, adapter, social: socialFor(adapter), credential };
+}
+
+/** The SDK's Instagram post insights skip `views`, the metric Instagram's own dashboard leads with. */
+async function instagramViews(postId: string, accessToken: string): Promise<MetricValue[]> {
+  const response = await fetch(`https://graph.instagram.com/v25.0/${encodeURIComponent(postId)}/insights?metric=views`, {
+    headers: { authorization: `Bearer ${accessToken}` },
+  });
+  if (!response.ok) return [];
+  const data = (await response.json()) as { data?: { name?: string; values?: { value?: unknown }[] }[] };
+  const value = data.data?.find((row) => row.name === "views")?.values?.[0]?.value;
+  if (typeof value !== "number") return [];
+  return [
+    { name: "views", value, unit: "count", period: "lifetime", fetchedAt: new Date().toISOString(), freshness: "unknown", source: "instagram:v25.0" } as MetricValue,
+  ];
 }
 
 export const syncAccount = internalAction({
@@ -94,7 +108,7 @@ export const syncAccount = internalAction({
   handler: async (ctx, args) => {
     const loaded = await load(ctx, args.accountId);
     if (loaded === null) return null;
-    const { account, adapter, social } = loaded;
+    const { account, adapter, social, credential } = loaded;
     const platform = account.platform;
     const manifest = adapter.capabilities;
     const ref = connectedAccountRef({ backend: "default", platform, accountId: account.platformAccountId });
@@ -166,6 +180,9 @@ export const syncAccount = internalAction({
           );
         } catch (error) {
           if (!(error instanceof SocialError) || error.code === "reconnect_required") throw error;
+        }
+        if (platform === "instagram" && adapter.id !== "demo" && credential) {
+          metrics = [...metrics, ...(await instagramViews(post.platformPostId, credential.accessToken))];
         }
         const { counters, native } = countersFrom(metrics);
         let history: { at: number; views: number }[] | undefined;
@@ -251,6 +268,8 @@ export const syncAccount = internalAction({
       });
     } catch (error) {
       const { message, reconnect } = errorMessage(error);
+      // The friendly message hides the cause; keep the platform's own error in the logs (no tokens in it).
+      console.error(`sync ${platform}`, error instanceof SocialError ? `${error.code} ${error.operation ?? ""} ${error.message}` : String(error));
       await ctx.runMutation(internal.accounts.finishSync, { accountId: account._id, error: message, reconnect });
     }
     return null;
