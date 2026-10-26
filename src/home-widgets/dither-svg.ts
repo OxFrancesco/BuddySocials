@@ -104,42 +104,53 @@ ${tick !== null ? `<rect x="${tick - 1}" y="0" width="2" height="${height}" fill
 }
 
 /**
- * Stacked dithered bars, one column per day and one coloured slice per
- * platform, matching the in-app Platform mix widget. Each slice is solid at
- * its top edge and thins toward its base.
+ * Overlapping lines, one per platform, each with a short dithered glow under
+ * it, matching the in-app Platform mix "Lines" chart. Series share one scale;
+ * later series draw on top.
  */
-export function ditherStackSvg(
-  stacks: readonly (readonly number[])[],
+export function ditherLinesSvg(
+  series: readonly (readonly number[])[],
   colors: readonly string[],
-  { width, height, cell = 3 }: { width: number; height: number; cell?: number },
+  { width, height, cell = 3, glow = 6 }: { width: number; height: number; cell?: number; glow?: number },
 ): string {
   const columns = Math.max(2, Math.floor(width / cell));
-  const rows = Math.max(2, Math.floor(height / cell));
-  const slot = columns / Math.max(1, stacks.length);
-  const barColumns = Math.max(1, Math.floor(slot) - 1);
-  const max = Math.max(1, ...stacks.map((stack) => stack.reduce((a, b) => a + b, 0)));
-  const rects: string[] = [];
-  stacks.forEach((stack, index) => {
-    const left = Math.round(index * slot);
-    let top = rows;
-    stack.forEach((value, layer) => {
-      const size = Math.round((value / max) * (rows - 1));
-      if (size <= 0) return;
-      const start = top - size;
-      for (let row = start; row < top; row++) {
-        const density = row === start ? 1 : Math.max(0.35, 1 - ((row - start) / size) * 0.75);
-        let runStart = -1;
-        for (let column = left; column <= left + barColumns; column++) {
-          const on = column < left + barColumns && (BAYER4[row % 4]![column % 4]! + 0.5) / 16 < density;
-          if (on && runStart < 0) runStart = column;
-          if (!on && runStart >= 0) {
-            rects.push(`<rect x="${runStart * cell}" y="${row * cell}" width="${(column - runStart) * cell}" height="${cell}" fill="${colors[layer]}"/>`);
-            runStart = -1;
-          }
-        }
+  const rows = Math.max(4, Math.floor(height / cell));
+  const max = Math.max(1, ...series.flat());
+  // Each cell keeps the colour of the last series that lit it.
+  const grid: (string | null)[][] = Array.from({ length: rows }, () => Array<string | null>(columns).fill(null));
+  series.forEach((values, index) => {
+    const last = Math.max(1, values.length - 1);
+    const topAt = (column: number) => {
+      const position = (column / (columns - 1)) * last;
+      const left = Math.floor(position);
+      const right = Math.min(values.length - 1, left + 1);
+      const t = (1 - Math.cos((position - left) * Math.PI)) / 2;
+      const value = (values[left] ?? 0) * (1 - t) + (values[right] ?? 0) * t;
+      return rows - 2 - Math.round((value / max) * (rows - 4));
+    };
+    for (let column = 0; column < columns; column++) {
+      const top = topAt(column);
+      const next = column + 1 < columns ? topAt(column + 1) : top;
+      // Solid stroke, filled vertically between neighbours so steep slopes stay connected.
+      for (let row = Math.min(top, next); row <= Math.max(top, next) + 1 && row < rows; row++) grid[row]![column] = colors[index]!;
+      for (let step = 2; step < glow && top + step < rows; step++) {
+        const density = 0.55 - step / (glow * 2);
+        if ((BAYER4[(top + step) % 4]![column % 4]! + 0.5) / 16 < density) grid[top + step]![column] = colors[index]!;
       }
-      top = start;
-    });
+    }
+  });
+  const rects: string[] = [];
+  grid.forEach((line, row) => {
+    let runStart = -1;
+    let runColor: string | null = null;
+    for (let column = 0; column <= columns; column++) {
+      const fill = column < columns ? line[column]! : null;
+      if (fill !== runColor) {
+        if (runColor !== null) rects.push(`<rect x="${runStart * cell}" y="${row * cell}" width="${(column - runStart) * cell}" height="${cell}" fill="${runColor}"/>`);
+        runStart = column;
+        runColor = fill;
+      }
+    }
   });
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${columns * cell}" height="${rows * cell}" viewBox="0 0 ${columns * cell} ${rows * cell}" shape-rendering="crispEdges">${rects.join("")}</svg>`;
 }

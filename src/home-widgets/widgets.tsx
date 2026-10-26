@@ -1,7 +1,7 @@
 import { FlexWidget, SvgWidget, TextWidget } from "react-native-android-widget";
 import { compact, percentChange, relativeTime, signedPercent } from "@shared/format";
 import { PLATFORM_COLOR, PLATFORM_LABEL, PLATFORM_TAG } from "@shared/platforms";
-import { ditherAreaSvg, ditherBarSvg, ditherStackSvg, goalBarSvg } from "./dither-svg";
+import { ditherAreaSvg, ditherBarSvg, ditherLinesSvg, goalBarSvg } from "./dither-svg";
 import type { HomeSnapshot } from "./snapshot";
 
 /** Same tokens as the app. Widget primitives need literal colours. */
@@ -439,9 +439,9 @@ export function MixWidget({ snapshot, ...size }: Size & { snapshot: HomeSnapshot
       </Shell>
     );
   }
-  const days = Math.max(...entries.map((entry) => entry.daily.length));
-  const stacks = Array.from({ length: days }, (_, day) => entries.map((entry) => entry.daily[day] ?? 0));
-  const colors = entries.map((entry) => PLATFORM_COLOR[entry.platform]);
+  // Last seven days, one overlapping line per platform; the biggest draws last so it sits on top.
+  const week = entries.map((entry) => entry.daily.slice(-7));
+  const days = Math.max(...week.map((values) => values.length));
   const chartHeight = Math.max(40, size.height - (short ? 62 : tall ? 120 : 92));
   const legend = entries.slice(0, narrow ? 3 : 5);
   return (
@@ -449,7 +449,12 @@ export function MixWidget({ snapshot, ...size }: Size & { snapshot: HomeSnapshot
       {...size}
       uri="buddysocials://"
       stack
-      chart={<SvgWidget svg={ditherStackSvg(stacks, colors, { width: inner, height: chartHeight })} style={{ width: inner, height: chartHeight }} />}
+      chart={
+        <SvgWidget
+          svg={ditherLinesSvg([...week].reverse(), entries.map((entry) => PLATFORM_COLOR[entry.platform]).reverse(), { width: inner, height: chartHeight })}
+          style={{ width: inner, height: chartHeight }}
+        />
+      }
     >
       <Micro text={`Views by platform · ${days}d`} />
       <FlexWidget style={{ flexDirection: tall && !narrow ? "column" : "row", flexGap: tall ? 6 : 12, width: "match_parent" }}>
@@ -457,7 +462,7 @@ export function MixWidget({ snapshot, ...size }: Size & { snapshot: HomeSnapshot
           <FlexWidget key={entry.platform} style={{ flexDirection: "row", alignItems: "center", flexGap: 6 }}>
             <FlexWidget style={{ width: 8, height: 8, backgroundColor: PLATFORM_COLOR[entry.platform] }} />
             <Micro text={tall && !narrow ? PLATFORM_LABEL[entry.platform] : PLATFORM_TAG[entry.platform]} color={FG} size={tall ? 11 : 10} />
-            <Micro text={compact(entry.daily.reduce((a, b) => a + b, 0))} color={DIM} size={tall ? 11 : 10} />
+            <Micro text={compact(entry.daily.slice(-7).reduce((a, b) => a + b, 0))} color={DIM} size={tall ? 11 : 10} />
           </FlexWidget>
         ))}
       </FlexWidget>

@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { View } from "react-native";
-import { Area, AreaChart, Bar, BarChart, Sparkline, Tooltip, XAxis } from "react-native-dither-kit";
+import { Area, AreaChart, Bar, BarChart, Line, LineChart, Sparkline, Tooltip, XAxis } from "react-native-dither-kit";
 import { compact, grouped, percentChange, shortDay, signedPercent } from "@shared/format";
 import { METRIC_LABEL, metricValue } from "@shared/metrics";
 import { PLATFORM_COLOR, PLATFORM_LABEL, PLATFORM_TAG, type Platform } from "@shared/platforms";
@@ -195,7 +195,7 @@ export function PlatformBody({ config, height, cols }: WidgetBodyProps) {
 
 type MixEntry = { platform: Platform; total: number; change: number | undefined; days: number[] };
 
-/** Each connected platform as its own coloured series: stacked days, side-by-side weeks, or one bar each. */
+/** Each connected platform as its own coloured series: overlapping lines, stacked days, side-by-side weeks, or one bar each. */
 export function MixBody({ config, rows, cols }: WidgetBodyProps) {
   const overview = useOverview(config.range);
   const entries = useMemo<MixEntry[] | null | undefined>(() => {
@@ -217,7 +217,7 @@ export function MixBody({ config, rows, cols }: WidgetBodyProps) {
   if (entries === undefined || overview === undefined) return <Loading />;
   if (entries === null || overview === null || entries.length === 0) return <Empty />;
 
-  const chart = config.chart ?? "days";
+  const chart = config.chart ?? "lines";
   const chartConfig = Object.fromEntries(
     entries.map((entry) => [entry.platform, { label: PLATFORM_LABEL[entry.platform], color: PLATFORM_COLOR[entry.platform] }]),
   );
@@ -261,21 +261,31 @@ export function MixBody({ config, rows, cols }: WidgetBodyProps) {
       </View>
       <Bleed>
         <Measured>
-          {({ height }) => (
-            <BarChart
-              data={data}
-              config={chartConfig}
-              stackType={chart === "weeks" ? "default" : "stacked"}
-              style={{ height, minHeight: 0 }}
-              margins={{ top: 4, right: 0, bottom: 0, left: 0 }}
-              animate
-            >
-              {entries.map((entry) => (
-                <Bar key={entry.platform} dataKey={entry.platform} variant="gradient" />
-              ))}
-              <Tooltip labelKey="label" valueFormatter={(value) => grouped(value)} />
-            </BarChart>
-          )}
+          {({ height }) =>
+            chart === "lines" ? (
+              <LineChart data={data} config={chartConfig} style={{ height, minHeight: 0 }} margins={{ top: 6, right: 0, bottom: 0, left: 0 }} animate>
+                {/* Biggest platform drawn last so its line sits on top. */}
+                {[...entries].reverse().map((entry) => (
+                  <Line key={entry.platform} dataKey={entry.platform} />
+                ))}
+                <Tooltip labelKey="label" valueFormatter={(value) => grouped(value)} />
+              </LineChart>
+            ) : (
+              <BarChart
+                data={data}
+                config={chartConfig}
+                stackType={chart === "weeks" ? "default" : "stacked"}
+                style={{ height, minHeight: 0 }}
+                margins={{ top: 4, right: 0, bottom: 0, left: 0 }}
+                animate
+              >
+                {entries.map((entry) => (
+                  <Bar key={entry.platform} dataKey={entry.platform} variant="gradient" />
+                ))}
+                <Tooltip labelKey="label" valueFormatter={(value) => grouped(value)} />
+              </BarChart>
+            )
+          }
         </Measured>
       </Bleed>
     </View>

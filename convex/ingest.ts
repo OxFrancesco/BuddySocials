@@ -275,3 +275,31 @@ export const comments = internalMutation({
     }
   },
 });
+
+/**
+ * Rebuilds a delta-based account's days from its posts, each post on the day it
+ * was published. Repairs history after a metric starts arriving late (Instagram views).
+ */
+export const rebuildDaysFromPosts = internalMutation({
+  args: { accountId: v.id("accounts") },
+  handler: async (ctx, args) => {
+    const account = await ctx.db.get("accounts", args.accountId);
+    if (account === null) return 0;
+    const days = await ctx.db
+      .query("dailyStats")
+      .withIndex("by_account_and_day", (q) => q.eq("accountId", args.accountId))
+      .take(1000);
+    // Keep follower changes; only the post-derived counters are rebuilt.
+    for (const day of days) {
+      if (!day.fromReport) await ctx.db.patch("dailyStats", day._id, { views: 0, likes: 0, comments: 0, shares: 0, saves: 0 });
+    }
+    const posts = await ctx.db
+      .query("posts")
+      .withIndex("by_account_and_platformPostId", (q) => q.eq("accountId", args.accountId))
+      .take(500);
+    for (const post of posts) {
+      await addToDay(ctx, account, dayKey(post.publishedAt), asDayCounters(post.counters));
+    }
+    return posts.length;
+  },
+});

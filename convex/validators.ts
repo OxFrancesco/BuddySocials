@@ -48,7 +48,7 @@ export const widgetValidator = v.object({
     metric: metricValidator,
     range: v.union(v.literal(7), v.literal(28), v.literal(90)),
     platform: v.union(v.literal("all"), platformValidator),
-    chart: v.optional(v.union(v.literal("days"), v.literal("weeks"), v.literal("bars"))),
+    chart: v.optional(v.union(v.literal("lines"), v.literal("days"), v.literal("weeks"), v.literal("bars"))),
   }),
 });
 

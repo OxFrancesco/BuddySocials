@@ -51,3 +51,20 @@ export const resetAllInternal = internalMutation({
     return layouts.length;
   },
 });
+
+/** Dev helper: collapses every Platform mix widget into one Lines chart where the first one sat. */
+export const collapseMixInternal = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const layouts = await ctx.db.query("layouts").take(100);
+    for (const layout of layouts) {
+      const first = layout.widgets.findIndex((widget) => widget.type === "mix");
+      if (first < 0) continue;
+      const kept = layout.widgets.filter((widget) => widget.type !== "mix");
+      const lines: WidgetInstance = { id: `mix-lines-${Date.now().toString(36)}`, type: "mix", size: "xl", config: { metric: "views", range: 7, platform: "all", chart: "lines" } };
+      kept.splice(Math.min(first, kept.length), 0, lines);
+      await ctx.db.patch("layouts", layout._id, { widgets: kept, updatedAt: Date.now() });
+    }
+    return layouts.length;
+  },
+});

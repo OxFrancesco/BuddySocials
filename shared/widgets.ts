@@ -20,10 +20,10 @@ export type RangeDays = (typeof RANGES)[number];
 
 export type PlatformFilter = Platform | "all";
 
-/** How the platform mix widget draws: stacked days, side-by-side weeks, or one bar per platform. */
-export const MIX_CHARTS = ["days", "weeks", "bars"] as const;
+/** How the platform mix widget draws: overlapping lines, stacked days, side-by-side weeks, or one bar per platform. */
+export const MIX_CHARTS = ["lines", "days", "weeks", "bars"] as const;
 export type MixChart = (typeof MIX_CHARTS)[number];
-export const MIX_CHART_LABEL: Record<MixChart, string> = { days: "Days", weeks: "Weeks", bars: "Platforms" };
+export const MIX_CHART_LABEL: Record<MixChart, string> = { lines: "Lines", days: "Days", weeks: "Weeks", bars: "Platforms" };
 
 export type WidgetConfig = {
   metric: DashboardMetric;
@@ -115,10 +115,10 @@ export const WIDGETS: Record<WidgetType, WidgetDefinition> = {
   },
   mix: {
     title: "Platform mix",
-    description: "Each platform as its own coloured bar.",
+    description: "Each platform in its own colour.",
     sizes: ["l", "m", "w", "xl"],
     settings: ["chart", "metric", "range"],
-    defaults: { ...BASE, chart: "days" },
+    defaults: { ...BASE, range: 7, chart: "lines" },
   },
   platform: {
     title: "Platform",
