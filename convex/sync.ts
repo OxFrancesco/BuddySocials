@@ -11,6 +11,7 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalAction, type ActionCtx } from "./_generated/server";
+import { metricsFor, postsWithMetrics } from "./social/batch";
 import { adapterFor, openCredential, sealCredential, socialFor, supports } from "./social/client";
 import { refreshIfNeeded } from "./social/oauth";
 import type { DemoNative } from "./social/demo";
@@ -23,7 +24,7 @@ const POST_LIMIT = 50;
 const COMMENT_WINDOW = 30 * DAY;
 const COMMENTS_PER_POST = 50;
 /** Largest page each platform accepts for its post list. */
-const PAGE_SIZE: Partial<Record<Platform, number>> = { tiktok: 20 };
+const PAGE_SIZE: Partial<Record<Platform, number>> = { tiktok: 20, youtube: 50 };
 const CHUNK = 25;
 
 /** Report metric names per source. YouTube Analytics uses its own names; demo uses ours. */
@@ -156,33 +157,55 @@ export const syncAccount = internalAction({
         }
       }
 
-      // 2. Recent posts and their counters.
-      const records: JsonObject[] = [];
-      await part("posts", async () => {
-        let cursor: string | undefined;
-        while (records.length < POST_LIMIT) {
-          const page = await social.posts.list(ref, { limit: PAGE_SIZE[platform] ?? 25, ...(cursor ? { cursor } : {}) });
-          records.push(...page.items);
-          if (!page.nextCursor || page.items.length === 0) break;
-          cursor = page.nextCursor;
-        }
-      });
+      // 2. Recent posts and their counters, in as few calls as each platform allows.
+      const direct = adapter.id !== "demo" && credential ? credential.accessToken : null;
+      const previousComments = new Map(
+        (await ctx.runQuery(internal.comments.countsInternal, { accountId: account._id })).map((row) => [row.id, row.comments]),
+      );
+      let records: JsonObject[] = [];
+      let known: Map<string, MetricValue[]> | null = null;
+      // A batched call the platform rejects falls back to the SDK's post-by-post reads; sign-in and billing problems don't.
+      const fallback = (error: unknown) => {
+        if (!(error instanceof SocialError) || error.code !== "upstream_failure") throw error;
+        console.warn(`sync ${platform}`, "batched read failed, reading post by post", error.message);
+        return null;
+      };
+      let listed = false;
+      if (direct) {
+        const page = await part("posts", () => postsWithMetrics(platform, account.platformAccountId, direct, POST_LIMIT).catch(fallback));
+        if (page) ({ records, metrics: known } = page);
+        listed = page !== null;
+      }
+      if (!listed) {
+        await part("posts", async () => {
+          let cursor: string | undefined;
+          while (records.length < POST_LIMIT) {
+            const page = await social.posts.list(ref, { limit: PAGE_SIZE[platform] ?? 25, ...(cursor ? { cursor } : {}) });
+            records.push(...page.items);
+            if (!page.nextCursor || page.items.length === 0) break;
+            cursor = page.nextCursor;
+          }
+        });
+        if (direct) known = await metricsFor(platform, records.slice(0, POST_LIMIT), direct).catch(fallback);
+      }
       const posts = records
         .map((record) => extractPost(platform, record))
         .filter((post): post is ExtractedPost => post !== null)
         .slice(0, POST_LIMIT);
 
       const withMetrics = await mapLimit(posts, 5, async (post) => {
-        let metrics: readonly MetricValue[] = [];
-        try {
-          metrics = await social.analytics.getPostMetrics(
-            platformPostRef({ ...ref, postId: post.platformPostId }),
-          );
-        } catch (error) {
-          if (!(error instanceof SocialError) || error.code === "reconnect_required") throw error;
-        }
-        if (platform === "instagram" && adapter.id !== "demo" && credential) {
-          metrics = [...metrics, ...(await instagramViews(post.platformPostId, credential.accessToken))];
+        let metrics: readonly MetricValue[] = known?.get(post.platformPostId) ?? [];
+        if (known === null) {
+          try {
+            metrics = await social.analytics.getPostMetrics(
+              platformPostRef({ ...ref, postId: post.platformPostId }),
+            );
+          } catch (error) {
+            if (!(error instanceof SocialError) || error.code === "reconnect_required") throw error;
+          }
+          if (platform === "instagram" && direct) {
+            metrics = [...metrics, ...(await instagramViews(post.platformPostId, direct))];
+          }
         }
         const { counters, native } = countersFrom(metrics);
         let history: { at: number; views: number }[] | undefined;
@@ -219,7 +242,17 @@ export const syncAccount = internalAction({
       if (supports(manifest, "comments.read", platform)) {
         // Last 30 days, plus the latest few posts so a quiet month still fills the inbox. X bills every read.
         const latest = platform === "x" ? [] : [...posts].sort((a, b) => b.publishedAt - a.publishedAt).slice(0, 10);
-        const recent = [...new Map([...posts.filter((post) => now - post.publishedAt < COMMENT_WINDOW), ...latest].map((post) => [post.platformPostId, post])).values()];
+        const candidates = [...new Map([...posts.filter((post) => now - post.publishedAt < COMMENT_WINDOW), ...latest].map((post) => [post.platformPostId, post])).values()];
+        // Only posts whose comment count moved since the last sync. The first sync of each UTC day
+        // reads them all to catch edits and deletions, except on X where every read is billed.
+        const sweep = args.backfill || (platform !== "x" && (account.lastSyncedAt === undefined || dayKey(account.lastSyncedAt) !== dayKey(now)));
+        const counted = new Map(withMetrics.map((post) => [post.platformPostId, post.counters.comments]));
+        const recent = sweep
+          ? candidates
+          : candidates.filter((post) => {
+              const count = counted.get(post.platformPostId);
+              return count === undefined || count !== previousComments.get(post.platformPostId);
+            });
         const ownHandle = account.handle.replace(/^@/, "").toLowerCase();
         // Some posts have comments turned off; only flag comments when every post refuses them.
         let refused = 0;
@@ -250,7 +283,8 @@ export const syncAccount = internalAction({
             ];
           });
         });
-        if (refused < recent.length) limited.splice(0, limited.length, ...limited.filter((name) => name !== "comments"));
+        if (recent.length === 0) limited.push(...(account.limited ?? []).filter((name) => name === "comments"));
+        else if (refused < recent.length) limited.splice(0, limited.length, ...limited.filter((name) => name !== "comments"));
         for (const batch of chunks(lists.flat(), 100)) {
           await ctx.runMutation(internal.ingest.comments, {
             accountId: account._id,

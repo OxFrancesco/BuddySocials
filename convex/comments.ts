@@ -120,6 +120,18 @@ export const replyTarget = internalQuery({
   },
 });
 
+/** Comment counts from the last sync, so the next one only reads comments on posts that changed. */
+export const countsInternal = internalQuery({
+  args: { accountId: v.id("accounts") },
+  handler: async (ctx, args) => {
+    const posts = await ctx.db
+      .query("posts")
+      .withIndex("by_account_and_platformPostId", (q) => q.eq("accountId", args.accountId))
+      .take(500);
+    return posts.flatMap((post) => (post.counters.comments === undefined ? [] : [{ id: post.platformPostId, comments: post.counters.comments }]));
+  },
+});
+
 export const replyResult = internalMutation({
   args: { commentId: v.id("comments"), error: v.optional(v.string()) },
   handler: async (ctx, args) => {

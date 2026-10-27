@@ -20,6 +20,7 @@ import type * as http from "../http.js";
 import type * as ingest from "../ingest.js";
 import type * as layouts from "../layouts.js";
 import type * as lib_owner from "../lib/owner.js";
+import type * as social_batch from "../social/batch.js";
 import type * as social_client from "../social/client.js";
 import type * as social_demo from "../social/demo.js";
 import type * as social_extract from "../social/extract.js";
@@ -46,6 +47,7 @@ declare const fullApi: ApiFromModules<{
   ingest: typeof ingest;
   layouts: typeof layouts;
   "lib/owner": typeof lib_owner;
+  "social/batch": typeof social_batch;
   "social/client": typeof social_client;
   "social/demo": typeof social_demo;
   "social/extract": typeof social_extract;
