@@ -61,6 +61,14 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     "expo-secure-store",
     "expo-web-browser",
     [
+      "expo-image-picker",
+      {
+        photosPermission: "BuddySocials attaches the photos and videos you choose to your posts.",
+        cameraPermission: "BuddySocials uses the camera to take photos and videos for your posts.",
+        microphonePermission: "BuddySocials records sound with the videos you take for your posts.",
+      },
+    ],
+    [
       "expo-font",
       {
         fonts: [

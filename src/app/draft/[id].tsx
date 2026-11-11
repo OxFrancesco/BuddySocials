@@ -3,35 +3,77 @@ import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
 import * as Linking from "expo-linking";
 import { router, useLocalSearchParams } from "expo-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Alert, Image, Pressable, TextInput, View } from "react-native";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
-import { MAX_DRAFT_MEDIA, MAX_DRAFT_TEXT, TEXT_LIMIT, postingIssues, type DraftMediaKind } from "@shared/drafts";
+import {
+  MAX_DRAFT_MEDIA,
+  MAX_DRAFT_TEXT,
+  MAX_IMAGE_BYTES,
+  MAX_VIDEO_BYTES,
+  TEXT_LIMIT,
+  postingIssues,
+  type DraftMediaInfo,
+  type DraftMediaKind,
+} from "@shared/drafts";
+import { NO_EDIT, downloadImage, formatDuration, isEdited, renderImage, sizeOf, uploadFile, type ImageEdit, type LocalImage } from "@/lib/media";
 import { Button } from "@/ui/button";
+import { MediaEditor } from "@/ui/media-editor";
 import { PlatformLogo } from "@/ui/platform-logo";
 import { PlusGlyph } from "@/ui/plus";
 import { Body, Label } from "@/ui/text";
 import { color, font } from "@/theme";
 
+/** A file as the server recorded it. */
 type Media = {
   storageId: Id<"_storage">;
   kind: DraftMediaKind;
   mimeType: string;
   byteSize: number;
   filename?: string;
-  /** What the thumbnail shows: the picked file until the saved copy has a link. */
-  preview: string | null;
 };
 
-const THUMB = 64;
+type Picked = { uri: string; kind: DraftMediaKind; mimeType: string; filename?: string; duration: number | null };
+
+/** One attachment on screen, from the moment it is picked. Only `ready` tiles are part of the draft. */
+type Tile = {
+  key: string;
+  kind: DraftMediaKind;
+  state: "uploading" | "failed" | "ready";
+  /** What the thumbnail shows: the local file until only the saved copy's link is known. */
+  preview: string | null;
+  /** Upload progress from 0 to 1. */
+  progress: number;
+  duration: number | null;
+  /** Kept so a failed upload can be tried again. */
+  picked?: Picked;
+  media?: Media;
+  /** The unedited image, so every edit starts from it instead of stacking on the last one. */
+  original?: LocalImage;
+  edit: ImageEdit;
+};
+
+const THUMB = 88;
+
+/** A reason worded here for the person, as opposed to one the server sent. */
+class Refusal extends Error {}
 
 /** The sentence the server wrote for the person, or `fallback` when it sent none. */
 function sentence(cause: unknown, fallback: string): string {
   const match = cause instanceof Error ? /Uncaught Error: ([^\n]+)/.exec(cause.message) : null;
+  if (cause instanceof Refusal) return cause.message;
   return match?.[1]?.trim() || fallback;
+}
+
+function tooBig(kind: DraftMediaKind): string {
+  return kind === "image" ? "Images can be up to 20 MB." : "Videos can be up to 200 MB. Trim it or export it smaller.";
+}
+
+function saved(tiles: readonly Tile[]): Media[] {
+  return tiles.flatMap((tile) => (tile.state === "ready" && tile.media ? [tile.media] : []));
 }
 
 function snapshot(text: string, accountIds: readonly string[], media: readonly Media[]): string {
@@ -48,6 +90,7 @@ export default function DraftEditor() {
   const remove = useMutation(api.drafts.remove);
   const publish = useMutation(api.drafts.publish);
   const generateUploadUrl = useMutation(api.drafts.generateUploadUrl);
+  const attach = useMutation(api.media.attach);
 
   // A new draft gets its ID on the first save; the screen then follows it live.
   const [draftId, setDraftId] = useState<Id<"drafts"> | null>(id === "new" ? null : (id as Id<"drafts">));
@@ -55,8 +98,9 @@ export default function DraftEditor() {
 
   const [text, setText] = useState("");
   const [accountIds, setAccountIds] = useState<Id<"accounts">[]>([]);
-  const [media, setMedia] = useState<Media[]>([]);
-  const [uploading, setUploading] = useState<string[]>([]);
+  const [tiles, setTiles] = useState<Tile[]>([]);
+  const [editing, setEditing] = useState<{ key: string; loadError: string | null } | null>(null);
+  const nextKey = useRef(0);
   const [savedAs, setSavedAs] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(draftId === null);
   const [busy, setBusy] = useState(false);
@@ -65,21 +109,33 @@ export default function DraftEditor() {
   useEffect(() => {
     if (loaded || !existing) return;
     const ids = existing.targets.map((target) => target.accountId);
-    const items: Media[] = existing.media.map((item) => ({
-      storageId: item.storageId,
+    const items: Tile[] = existing.media.map((item) => ({
+      key: item.storageId,
       kind: item.kind,
-      mimeType: item.mimeType,
-      byteSize: item.byteSize,
-      ...(item.filename ? { filename: item.filename } : {}),
+      state: "ready",
       preview: item.url,
+      progress: 1,
+      duration: null,
+      media: {
+        storageId: item.storageId,
+        kind: item.kind,
+        mimeType: item.mimeType,
+        byteSize: item.byteSize,
+        ...(item.filename ? { filename: item.filename } : {}),
+      },
+      edit: NO_EDIT,
     }));
     setText(existing.text);
     setAccountIds(ids);
-    setMedia(items);
-    setSavedAs(snapshot(existing.text, ids, items));
+    setTiles(items);
+    setSavedAs(snapshot(existing.text, ids, saved(items)));
     setLoaded(true);
   }, [existing, loaded]);
 
+  const media = saved(tiles);
+  const uploading = tiles.some((tile) => tile.state === "uploading");
+  // A file still on its way counts by its kind, so "one video on its own" shows before the upload ends.
+  const checked: DraftMediaInfo[] = tiles.flatMap((tile) => (tile.state === "failed" ? [] : [tile.media ?? { kind: tile.kind }]));
   const dirty = snapshot(text, accountIds, media) !== savedAs;
   const status = existing?.status ?? "draft";
   const sending = status === "publishing";
@@ -98,7 +154,7 @@ export default function DraftEditor() {
   // whether X allows images is only known to the server, so that one shows after saving.
   const issuesByAccount = remaining.map((account) => {
     const target = targetOf(account._id);
-    const issues = !dirty && target ? target.issues : postingIssues({ ...account, scopes: ["media.write"] }, text, media);
+    const issues = !dirty && target ? target.issues : postingIssues({ ...account, scopes: ["media.write"] }, text, checked);
     return { handle: account.handle, issues };
   });
   const issueLines = [...new Set(issuesByAccount.flatMap((entry) => entry.issues))].map((issue) => {
@@ -111,8 +167,9 @@ export default function DraftEditor() {
   const limit = limits.length > 0 ? Math.min(...limits) : null;
 
   const blank = text.trim().length === 0 && media.length === 0 && accountIds.length === 0;
-  const canSave = loaded && !busy && !locked && uploading.length === 0 && dirty && !(draftId === null && blank);
-  const canPublish = loaded && !busy && !locked && uploading.length === 0 && remaining.length > 0 && issueLines.length === 0;
+  const canSave = loaded && !busy && !locked && !uploading && dirty && !(draftId === null && blank);
+  const canPublish = loaded && !busy && !locked && !uploading && remaining.length > 0 && issueLines.length === 0;
+  const slots = MAX_DRAFT_MEDIA - tiles.length;
 
   /** Saves pending edits and returns the draft's ID, or null when saving failed. */
   async function persist(): Promise<Id<"drafts"> | null> {
@@ -122,7 +179,7 @@ export default function DraftEditor() {
         ...(draftId ? { draftId } : {}),
         text,
         accountIds,
-        media: media.map(({ preview: _preview, ...item }) => item),
+        media,
       });
       setSavedAs(snapshot(text, accountIds, media));
       setDraftId(saved);
@@ -184,40 +241,143 @@ export default function DraftEditor() {
     ]);
   }
 
-  async function addImages() {
-    setError(null);
-    const picked = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ["images"],
-      allowsMultipleSelection: true,
-      selectionLimit: MAX_DRAFT_MEDIA - media.length,
-      quality: 0.9,
-    });
-    if (picked.canceled) return;
-    const assets = picked.assets.slice(0, MAX_DRAFT_MEDIA - media.length);
-    setUploading(assets.map((asset) => asset.uri));
-    for (const asset of assets) {
-      try {
-        const mimeType = asset.mimeType ?? "image/jpeg";
-        const blob = await (await fetch(asset.uri)).blob();
-        const response = await fetch(await generateUploadUrl({}), { method: "POST", headers: { "Content-Type": mimeType }, body: blob });
-        if (!response.ok) throw new Error("Upload failed");
-        const { storageId } = (await response.json()) as { storageId: Id<"_storage"> };
-        const item: Media = {
-          storageId,
-          kind: "image",
-          mimeType,
-          byteSize: asset.fileSize ?? blob.size,
-          ...(asset.fileName ? { filename: asset.fileName } : {}),
-          preview: asset.uri,
-        };
-        setMedia((current) => (current.length < MAX_DRAFT_MEDIA ? [...current, item] : current));
-      } catch {
-        setError("Couldn't add that image. Try again.");
-      } finally {
-        setUploading((current) => current.filter((uri) => uri !== asset.uri));
+  function patch(key: string, change: Partial<Tile>) {
+    setTiles((current) => current.map((tile) => (tile.key === key ? { ...tile, ...change } : tile)));
+  }
+
+  /** Uploads a local file and returns the server's own record of it. */
+  async function upload(uri: string, kind: DraftMediaKind, mimeType: string, filename: string | undefined, onProgress?: (fraction: number) => void) {
+    if (sizeOf(uri) > (kind === "image" ? MAX_IMAGE_BYTES : MAX_VIDEO_BYTES)) throw new Refusal(tooBig(kind));
+    const storageId = (await uploadFile(uri, mimeType, await generateUploadUrl({}), onProgress)) as Id<"_storage">;
+    const record = await attach({ storageId, ...(filename ? { filename } : {}) });
+    const item: Media = {
+      storageId: record.storageId,
+      kind: record.kind,
+      mimeType: record.mimeType,
+      byteSize: record.byteSize,
+      ...(record.filename ? { filename: record.filename } : {}),
+    };
+    return item;
+  }
+
+  async function start(key: string, picked: Picked) {
+    patch(key, { state: "uploading", progress: 0 });
+    try {
+      let { uri, mimeType, filename } = picked;
+      let original: LocalImage | undefined;
+      if (picked.kind === "image") {
+        // HEIC and WebP are refused by X and LinkedIn, so every image goes up as a JPEG.
+        original = await renderImage(picked);
+        uri = original.uri;
+        mimeType = "image/jpeg";
+        if (filename) filename = `${filename.replace(/\.[^.]+$/, "")}.jpg`;
+        patch(key, { original, preview: uri });
       }
+      const item = await upload(uri, picked.kind, mimeType, filename, (fraction) => patch(key, { progress: fraction }));
+      patch(key, { state: "ready", media: item, kind: item.kind, progress: 1 });
+    } catch (cause) {
+      patch(key, { state: "failed" });
+      setError(sentence(cause, `Couldn't add that ${picked.kind}. Try again.`));
     }
   }
+
+  async function add(from: "library" | "photo" | "video") {
+    setError(null);
+    if (slots <= 0) return;
+    let result: ImagePicker.ImagePickerResult;
+    try {
+      if (from === "library") {
+        result = await ImagePicker.launchImageLibraryAsync({
+          mediaTypes: ["images", "videos"],
+          allowsMultipleSelection: true,
+          selectionLimit: slots,
+          // Images are re-encoded once, here, so the picker must not compress them first.
+          quality: 1,
+        });
+      } else {
+        const permission = await ImagePicker.requestCameraPermissionsAsync();
+        if (!permission.granted) {
+          setError("Allow camera access in Settings to take a photo or video here.");
+          return;
+        }
+        result = await ImagePicker.launchCameraAsync({ mediaTypes: from === "photo" ? ["images"] : ["videos"], quality: 1 });
+      }
+    } catch {
+      setError(from === "library" ? "Couldn't open your library. Try again." : "Couldn't open the camera. Try again.");
+      return;
+    }
+    if (result.canceled) return;
+    const added: { key: string; picked: Picked }[] = [];
+    for (const asset of result.assets.slice(0, slots)) {
+      const kind: DraftMediaKind = asset.type === "video" || asset.mimeType?.startsWith("video/") ? "video" : "image";
+      // An image is re-encoded smaller before it goes up; a video goes as it is, so it is refused here.
+      if (kind === "video" && (asset.fileSize ?? 0) > MAX_VIDEO_BYTES) {
+        setError(tooBig("video"));
+        continue;
+      }
+      const picked: Picked = {
+        uri: asset.uri,
+        kind,
+        mimeType: asset.mimeType ?? (kind === "video" ? "video/mp4" : "image/jpeg"),
+        ...(asset.fileName ? { filename: asset.fileName } : {}),
+        duration: kind === "video" ? (asset.duration ?? null) : null,
+      };
+      added.push({ key: `picked-${nextKey.current++}`, picked });
+    }
+    setTiles((current) => [
+      ...current,
+      ...added.map(({ key, picked }): Tile => ({
+        key,
+        kind: picked.kind,
+        state: "uploading",
+        preview: picked.kind === "image" ? picked.uri : null,
+        progress: 0,
+        duration: picked.duration,
+        picked,
+        edit: NO_EDIT,
+      })),
+    ]);
+    // One at a time: several large uploads at once starve each other on a phone connection.
+    for (const { key, picked } of added) await start(key, picked);
+  }
+
+  function openCamera() {
+    Alert.alert("Camera", undefined, [
+      { text: "Take photo", onPress: () => void add("photo") },
+      { text: "Record video", onPress: () => void add("video") },
+      { text: "Cancel", style: "cancel" },
+    ]);
+  }
+
+  async function openEditor(tile: Tile) {
+    setError(null);
+    setEditing({ key: tile.key, loadError: null });
+    if (tile.original || !tile.media || !tile.preview) return;
+    // A draft opened again only has the saved copy, so that becomes the image edits start from.
+    try {
+      const original = await renderImage({ uri: await downloadImage(tile.preview, tile.media.storageId) });
+      patch(tile.key, { original });
+    } catch {
+      setEditing((current) => (current?.key === tile.key ? { key: tile.key, loadError: "Couldn't open that image. Try again." } : current));
+    }
+  }
+
+  /** Renders the edit from the original and swaps the new file in at the same position. */
+  async function applyEdit(key: string, edit: ImageEdit): Promise<string | null> {
+    const tile = tiles.find((other) => other.key === key);
+    if (!tile?.original) return "Couldn't open that image. Try again.";
+    try {
+      const rendered = isEdited(edit) ? await renderImage(tile.original, edit) : tile.original;
+      const item = await upload(rendered.uri, "image", "image/jpeg", tile.media?.filename);
+      patch(key, { media: item, preview: rendered.uri, edit });
+      setEditing(null);
+      return null;
+    } catch (cause) {
+      return sentence(cause, "Couldn't save the edit. Try again.");
+    }
+  }
+
+  const edited = editing ? tiles.find((tile) => tile.key === editing.key) : undefined;
 
   function toggle(accountId: Id<"accounts">) {
     void Haptics.selectionAsync();
@@ -328,57 +488,92 @@ export default function DraftEditor() {
         </View>
       ) : null}
 
-      {media.length > 0 || uploading.length > 0 || !locked ? (
-        <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 12 }}>
-          {media.map((item, index) => (
-            <View key={item.storageId} style={{ width: THUMB, height: THUMB, borderWidth: 2, borderColor: color.line }}>
-              {item.kind === "image" && item.preview ? (
-                <Image
-                  testID={`draft-media-${index}`}
-                  accessibilityLabel={`Image ${index + 1}`}
-                  source={{ uri: item.preview }}
-                  style={{ width: THUMB - 4, height: THUMB - 4 }}
-                  resizeMode="cover"
-                />
-              ) : (
-                <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
-                  <Label>{item.kind === "video" ? "Video" : "Image"}</Label>
-                </View>
-              )}
-              {locked ? null : (
-                <Pressable
-                  testID={`draft-media-remove-${index}`}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Remove ${item.kind} ${index + 1}`}
-                  onPress={() => setMedia((current) => current.filter((other) => other.storageId !== item.storageId))}
-                  hitSlop={8}
-                  style={{
-                    position: "absolute",
-                    top: -8,
-                    right: -8,
-                    width: 22,
-                    height: 22,
-                    alignItems: "center",
-                    justifyContent: "center",
-                    backgroundColor: color.bg,
-                    borderWidth: 2,
-                    borderColor: color.fg,
-                  }}
-                >
-                  <View style={{ transform: [{ rotate: "45deg" }] }}>
-                    <PlusGlyph size={10} thickness={2} tint={color.fg} />
+      {tiles.length > 0 || !locked ? (
+        <View style={{ gap: 12 }}>
+          {tiles.length > 0 ? (
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 12 }}>
+              {tiles.map((tile, index) => {
+                const name = `${tile.kind === "video" ? "Video" : "Image"} ${index + 1}`;
+                const editable = !locked && tile.kind === "image" && tile.state === "ready";
+                const retry = tile.state === "failed" && tile.picked ? tile.picked : null;
+                const status =
+                  tile.state === "failed" ? "Retry" : tile.state === "uploading" ? (tile.progress > 0 ? `${Math.round(tile.progress * 100)}%` : "Uploading") : null;
+                return (
+                  <View
+                    key={tile.key}
+                    style={{ width: THUMB, height: THUMB, borderWidth: 2, borderColor: tile.state === "failed" ? color.coral : color.line }}
+                  >
+                    <Pressable
+                      testID={retry ? `draft-media-retry-${index}` : `draft-media-edit-${index}`}
+                      accessibilityRole="button"
+                      accessibilityLabel={retry ? `${name} failed. Try again` : editable ? `Edit ${name}` : status ? `${name}, ${status}` : name}
+                      disabled={!retry && !editable}
+                      onPress={() => (retry ? void start(tile.key, retry) : void openEditor(tile))}
+                      style={{ flex: 1, alignItems: "center", justifyContent: "center" }}
+                    >
+                      {tile.kind === "image" && tile.preview ? (
+                        <Image
+                          testID={`draft-media-${index}`}
+                          source={{ uri: tile.preview }}
+                          style={{ position: "absolute", width: THUMB - 4, height: THUMB - 4, opacity: tile.state === "ready" ? 1 : 0.4 }}
+                          resizeMode="cover"
+                        />
+                      ) : (
+                        <View testID={`draft-media-${index}`} style={{ alignItems: "center", gap: 2, opacity: tile.state === "ready" ? 1 : 0.6 }}>
+                          <Label tone="fg">{tile.kind === "video" ? "Video" : "Image"}</Label>
+                          {tile.duration ? <Label>{formatDuration(tile.duration)}</Label> : null}
+                        </View>
+                      )}
+                      {status || editable ? (
+                        <View style={{ position: "absolute", left: 0, right: 0, bottom: 0, paddingVertical: 2, alignItems: "center", backgroundColor: color.bg }}>
+                          <Label testID={`draft-media-status-${index}`} tone={tile.state === "failed" ? "coral" : "fg"}>
+                            {status ?? "Edit"}
+                          </Label>
+                        </View>
+                      ) : null}
+                    </Pressable>
+                    {locked || tile.state === "uploading" ? null : (
+                      <Pressable
+                        testID={`draft-media-remove-${index}`}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Remove ${name}`}
+                        onPress={() => setTiles((current) => current.filter((other) => other.key !== tile.key))}
+                        hitSlop={8}
+                        style={{
+                          position: "absolute",
+                          top: -8,
+                          right: -8,
+                          width: 22,
+                          height: 22,
+                          alignItems: "center",
+                          justifyContent: "center",
+                          backgroundColor: color.bg,
+                          borderWidth: 2,
+                          borderColor: color.fg,
+                        }}
+                      >
+                        <View style={{ transform: [{ rotate: "45deg" }] }}>
+                          <PlusGlyph size={10} thickness={2} tint={color.fg} />
+                        </View>
+                      </Pressable>
+                    )}
                   </View>
-                </Pressable>
-              )}
+                );
+              })}
             </View>
-          ))}
-          {uploading.map((uri) => (
-            <View key={uri} style={{ width: THUMB, height: THUMB, borderWidth: 2, borderColor: color.line, opacity: 0.6 }}>
-              <Image accessibilityLabel="Uploading image" source={{ uri }} style={{ width: THUMB - 4, height: THUMB - 4 }} resizeMode="cover" />
+          ) : null}
+          {locked ? null : slots > 0 ? (
+            <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 12 }}>
+              <Button testID="draft-add-media" size="sm" variant="outline" label="Add media" disabled={uploading} onPress={() => void add("library")} />
+              <Button testID="draft-camera" size="sm" variant="outline" label="Camera" disabled={uploading} onPress={openCamera} />
+              <Label testID="draft-media-count">
+                {tiles.length}/{MAX_DRAFT_MEDIA}
+              </Label>
             </View>
-          ))}
-          {locked || media.length + uploading.length >= MAX_DRAFT_MEDIA ? null : (
-            <Button testID="draft-add-image" size="sm" variant="outline" label="Add image" disabled={uploading.length > 0} onPress={() => void addImages()} />
+          ) : (
+            <Label testID="draft-media-count">
+              {tiles.length}/{MAX_DRAFT_MEDIA} attached
+            </Label>
           )}
         </View>
       ) : null}
@@ -425,6 +620,16 @@ export default function DraftEditor() {
         <View style={{ alignItems: "flex-start" }}>
           <Button testID="delete-draft" variant="outline" label="Delete" disabled={busy} onPress={confirmDelete} />
         </View>
+      ) : null}
+      {editing && edited ? (
+        <MediaEditor
+          key={editing.key}
+          source={edited.original ?? null}
+          loadError={editing.loadError}
+          initial={edited.edit}
+          onCancel={() => setEditing(null)}
+          onDone={(edit) => applyEdit(editing.key, edit)}
+        />
       ) : null}
     </KeyboardAwareScrollView>
   );

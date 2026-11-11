@@ -8,6 +8,7 @@ import type { Platform } from "@shared/platforms";
 import { useNow, useWide } from "@/lib/hooks";
 import { Button } from "@/ui/button";
 import { Chips, platformOptions } from "@/ui/chips";
+import { CleanupBar } from "@/ui/cleanup-bar";
 import { DraftRow } from "@/ui/draft-row";
 import { PlusButton } from "@/ui/plus";
 import { PostRow } from "@/ui/post-row";
@@ -83,6 +84,7 @@ export default function Posts() {
         keyExtractor={(draft) => draft._id}
         contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 120 }}
         renderItem={({ item }) => <DraftRow draft={item} onPress={() => openDraft(item._id)} />}
+        ListFooterComponent={<CleanupBar />}
         ListEmptyComponent={
           drafts === undefined ? undefined : (
             <View style={{ paddingTop: 24, alignItems: "flex-start" }}>
