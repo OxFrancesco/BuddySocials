@@ -1,10 +1,11 @@
 import { useMemo } from "react";
 import { View } from "react-native";
-import { Area, AreaChart, Bar, BarChart, Sparkline, Tooltip, XAxis } from "react-native-dither-kit";
+import { Area, AreaChart, Bar, BarChart, Sparkline, Tooltip } from "react-native-dither-kit";
 import { compact, grouped, percentChange, shortDay, signedPercent } from "@shared/format";
 import { METRIC_LABEL, metricValue } from "@shared/metrics";
-import { PLATFORM_COLOR, PLATFORM_LABEL, PLATFORM_TAG, accentFor, type Platform } from "@shared/platforms";
+import { PLATFORM_COLOR, PLATFORM_LABEL, accentFor, type Platform } from "@shared/platforms";
 import type { WidgetConfig } from "@shared/widgets";
+import { PlatformLogo } from "@/ui/platform-logo";
 import { Figure, Label } from "@/ui/text";
 import { color } from "@/theme";
 import { useMetric, useOverview } from "./data";
@@ -12,9 +13,9 @@ import { Empty, Loading, Measured, TILE_PAD } from "./frame";
 
 export type WidgetBodyProps = { config: WidgetConfig; width: number; height: number; cols: number; rows: number };
 
+/** The tile title. A single platform shows as its logo in the frame, so the name isn't repeated here. */
 export function titleFor(config: WidgetConfig, kind: string, withMetric = true): string {
   const parts = [withMetric ? METRIC_LABEL[config.metric] : kind];
-  if (config.platform !== "all") parts.push(PLATFORM_TAG[config.platform]);
   parts.push(`${config.range}d`);
   return parts.join(" · ");
 }
@@ -118,7 +119,7 @@ export function SplitBody({ config, rows }: WidgetBodyProps) {
   const bars = data.byPlatform
     .filter((entry) => entry.total > 0 || entry.previous > 0)
     .sort((a, b) => b.total - a.total)
-    .map((entry) => ({ platform: PLATFORM_TAG[entry.platform], current: entry.total, previous: entry.previous }));
+    .map((entry) => ({ platform: entry.platform, label: PLATFORM_LABEL[entry.platform], current: entry.total, previous: entry.previous }));
   return (
     <View style={{ flex: 1, gap: 8 }}>
       {rows === 1 ? null : (
@@ -137,16 +138,23 @@ export function SplitBody({ config, rows }: WidgetBodyProps) {
                 previous: { label: "Previous", color: "#FFFFFF" },
               }}
               style={{ height, minHeight: 0 }}
-              margins={{ top: 4, right: 8, bottom: 26, left: 8 }}
+              margins={{ top: 4, right: 8, bottom: 0, left: 8 }}
               animate
             >
-              <XAxis dataKey="platform" />
               <Bar dataKey="current" variant="gradient" />
               <Bar dataKey="previous" variant="dotted" />
-              <Tooltip labelKey="platform" valueFormatter={(value) => grouped(value)} />
+              <Tooltip labelKey="label" valueFormatter={(value) => grouped(value)} />
             </BarChart>
           )}
         </Measured>
+        {/* Logos under each pair of bars, in place of a text axis. */}
+        <View style={{ flexDirection: "row", paddingHorizontal: 8, paddingTop: 6, paddingBottom: 10 }}>
+          {bars.map((bar) => (
+            <View key={bar.platform} style={{ flex: 1, alignItems: "center" }}>
+              <PlatformLogo platform={bar.platform} size={12} />
+            </View>
+          ))}
+        </View>
       </Bleed>
     </View>
   );
@@ -224,7 +232,7 @@ export function MixBody({ config, rows, cols }: WidgetBodyProps) {
   let data: Record<string, number | string>[];
   if (chart === "bars") {
     data = entries.map((entry) => ({
-      label: PLATFORM_TAG[entry.platform],
+      label: PLATFORM_LABEL[entry.platform],
       ...Object.fromEntries(entries.map((other) => [other.platform, other.platform === entry.platform ? entry.total : 0])),
     }));
   } else {
@@ -247,9 +255,10 @@ export function MixBody({ config, rows, cols }: WidgetBodyProps) {
       <View style={{ flexDirection: "row", flexWrap: "wrap", columnGap: 12, rowGap: 4 }}>
         {entries.map((entry) => (
           <View key={entry.platform} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-            <View style={{ width: 8, height: 8, backgroundColor: PLATFORM_COLOR[entry.platform] }} />
+            {/* The logo in the series colour doubles as the legend swatch. */}
+            <PlatformLogo platform={entry.platform} size={11} tint={PLATFORM_COLOR[entry.platform]} />
             <Label size={10} tone="fg">
-              {PLATFORM_TAG[entry.platform]} {compact(entry.total)}
+              {compact(entry.total)}
             </Label>
             {showChange && entry.change !== undefined ? (
               <Label size={10} tone={entry.change < 0 ? "coral" : "dim"}>

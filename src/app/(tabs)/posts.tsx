@@ -3,9 +3,9 @@ import { useState } from "react";
 import { FlatList, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "../../../convex/_generated/api";
-import { PLATFORMS, PLATFORM_LABEL, type Platform } from "@shared/platforms";
+import type { Platform } from "@shared/platforms";
 import { useNow, useWide } from "@/lib/hooks";
-import { Chips } from "@/ui/chips";
+import { Chips, platformOptions } from "@/ui/chips";
 import { PostRow } from "@/ui/post-row";
 import { Body } from "@/ui/text";
 import { color } from "@/theme";
@@ -29,7 +29,7 @@ export default function Posts() {
         <Chips
           scroll
           testIDPrefix="posts-filter"
-          options={[{ value: "all" as Filter, label: "All" }, ...PLATFORMS.map((p) => ({ value: p as Filter, label: PLATFORM_LABEL[p] }))]}
+          options={platformOptions()}
           value={filter}
           onChange={setFilter}
         />

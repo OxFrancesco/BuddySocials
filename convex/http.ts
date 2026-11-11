@@ -35,7 +35,8 @@ http.route({
     const state = url.searchParams.get("state");
     if (url.searchParams.get("error") || !state) return back({ error: "Sign-in was cancelled." });
     const result = await ctx.runAction(internal.connect.complete, { state, callbackUrl: request.url });
-    return "error" in result ? back({ error: result.error }) : back({ connected: result.platform });
+    if ("error" in result) return back({ error: result.error });
+    return back({ connected: result.platform, handle: result.handle, ...(result.existing ? { existing: "1" } : {}) });
   }),
 });
 

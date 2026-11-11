@@ -2,10 +2,9 @@ import { router, useLocalSearchParams } from "expo-router";
 import { ScrollView, View, useWindowDimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { DASHBOARD_METRICS, METRIC_LABEL } from "@shared/metrics";
-import { PLATFORMS, PLATFORM_LABEL } from "@shared/platforms";
-import { MIX_CHARTS, MIX_CHART_LABEL, RANGES, WIDGETS, WIDGET_SIZES, type PlatformFilter } from "@shared/widgets";
+import { MIX_CHARTS, MIX_CHART_LABEL, RANGES, WIDGETS, WIDGET_SIZES } from "@shared/widgets";
 import { Button } from "@/ui/button";
-import { Chips } from "@/ui/chips";
+import { Chips, platformOptions } from "@/ui/chips";
 import { Display } from "@/ui/text";
 import { color } from "@/theme";
 import { useGridCell } from "@/widgets/grid";
@@ -26,10 +25,7 @@ export default function EditWidget() {
     layout.update(widget.id, (current) => ({ ...current, config: { ...current.config, ...change } }));
   const previewWidth = Math.min(width - 32, tileSize(widget, grid).width);
   const scale = previewWidth / tileSize(widget, grid).width;
-  const platformOptions: { value: PlatformFilter; label: string }[] = [
-    ...(definition.needsSinglePlatform ? [] : [{ value: "all" as const, label: "All" }]),
-    ...PLATFORMS.map((platform) => ({ value: platform, label: PLATFORM_LABEL[platform] })),
-  ];
+  const platformChoices = definition.needsSinglePlatform ? platformOptions(false) : platformOptions();
 
   return (
     <ScrollView
@@ -83,7 +79,7 @@ export default function EditWidget() {
       ) : null}
       {definition.settings.includes("platform") ? (
         <View>
-          <Chips testIDPrefix="platform" options={platformOptions} value={widget.config.platform} onChange={(platform) => set({ platform })} />
+          <Chips testIDPrefix="platform" options={platformChoices} value={widget.config.platform} onChange={(platform) => set({ platform })} />
         </View>
       ) : null}
 

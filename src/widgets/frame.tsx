@@ -1,5 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { Pressable, View } from "react-native";
+import type { Platform } from "@shared/platforms";
+import { PlatformLogo } from "@/ui/platform-logo";
 import { Label } from "@/ui/text";
 import { color } from "@/theme";
 
@@ -12,6 +14,7 @@ export const TILE_PAD = 16;
  */
 export function Frame({
   title,
+  platform,
   children,
   onPress,
   width,
@@ -19,6 +22,7 @@ export function Frame({
   testID,
 }: {
   title: string;
+  platform?: Platform;
   children: ReactNode;
   onPress?: () => void;
   width: number;
@@ -27,7 +31,16 @@ export function Frame({
 }) {
   const body = (
     <View style={{ width, height, padding: TILE_PAD, borderWidth: 2, borderColor: color.line, backgroundColor: color.bg, gap: 10, overflow: "hidden" }}>
-      <Label numberOfLines={1}>{title}</Label>
+      {platform ? (
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+          <PlatformLogo platform={platform} size={11} opacity={0.7} />
+          <Label numberOfLines={1} style={{ flexShrink: 1 }}>
+            {title}
+          </Label>
+        </View>
+      ) : (
+        <Label numberOfLines={1}>{title}</Label>
+      )}
       <View style={{ flex: 1 }}>{children}</View>
     </View>
   );
