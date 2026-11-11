@@ -18,9 +18,10 @@ async function refreshAll() {
 }
 
 /**
- * Keeps the Android home screen widgets in step with the app: issues the
- * read-only widget token once, then redraws the widgets whenever the
- * dashboard data changes or the app comes back to the foreground.
+ * Runs once after sign-in. On every platform it records who signed in. On
+ * Android it also keeps the home screen widgets in step with the app: issues
+ * the read-only widget token once, then redraws the widgets whenever the
+ * dashboard data changes or the app goes to the background.
  */
 export function HomeWidgetSync() {
   const { isAuthenticated } = useConvexAuth();
@@ -28,6 +29,16 @@ export function HomeWidgetSync() {
   const accounts = useQuery(api.accounts.list, isAuthenticated ? {} : "skip");
   const open = useQuery(api.comments.openSummary, isAuthenticated ? {} : "skip");
   const issuing = useRef(false);
+  const ensureProfile = useMutation(api.profiles.ensure);
+  const ensured = useRef(false);
+
+  useEffect(() => {
+    if (!isAuthenticated || ensured.current) return;
+    ensured.current = true;
+    void ensureProfile({}).catch(() => {
+      ensured.current = false;
+    });
+  }, [isAuthenticated, ensureProfile]);
 
   useEffect(() => {
     if (Platform.OS !== "android" || !isAuthenticated || issuing.current) return;

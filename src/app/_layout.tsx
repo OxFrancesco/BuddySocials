@@ -92,6 +92,7 @@ function Navigator() {
           />
           <Stack.Screen name="add-widget" options={{ presentation: "modal", animation: "slide_from_bottom" }} />
           <Stack.Screen name="goal/[id]" options={{ presentation: "modal", animation: "slide_from_bottom" }} />
+          <Stack.Screen name="draft/[id]" options={{ presentation: "modal", animation: "slide_from_bottom" }} />
         </Stack.Protected>
         <Stack.Protected guard={!signedIn}>
           <Stack.Screen name="sign-in" />
