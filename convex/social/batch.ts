@@ -21,8 +21,10 @@ async function getJson(url: string, accessToken: string, operation: string): Pro
   const response = await fetch(url, { headers: { authorization: `Bearer ${accessToken}` } });
   if (response.ok) return (await response.json()) as JsonObject;
   const status = response.status;
+  // Meta answers a dead token with HTTP 400 and its own error code 190, not 401.
+  const meta = status === 400 ? ((await response.json().catch(() => null)) as { error?: { code?: unknown } } | null) : null;
   const code =
-    status === 401
+    status === 401 || meta?.error?.code === 190
       ? "reconnect_required"
       : status === 402
         ? "billing_required"

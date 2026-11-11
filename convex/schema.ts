@@ -154,6 +154,8 @@ export default defineSchema({
     codeVerifier: v.string(),
     providerState: v.optional(v.string()),
     redirectUri: v.string(),
+    /** Set when the desktop app started it, so the callback ends on a web page instead of the phone app. */
+    client: v.optional(v.literal("desktop")),
     createdAt: v.number(),
   }).index("by_state", ["state"]),
 

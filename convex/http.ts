@@ -4,6 +4,12 @@ import { httpAction } from "./_generated/server";
 
 const http = httpRouter();
 
+function page(message: string): Response {
+  const text = message.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
+  const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>BuddySocials</title><body style="margin:0;height:100vh;display:grid;place-items:center;background:#000;color:#fff;font:16px/1.5 ui-monospace,Menlo,monospace"><p style="max-width:32ch;padding:24px;border:2px solid #292929">${text}</p>`;
+  return new Response(html, { status: 200, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+}
+
 /** Android home screen widgets poll this with their read-only token. */
 http.route({
   path: "/widget-snapshot",
@@ -35,6 +41,10 @@ http.route({
     const state = url.searchParams.get("state");
     if (url.searchParams.get("error") || !state) return back({ error: "Sign-in was cancelled." });
     const result = await ctx.runAction(internal.connect.complete, { state, callbackUrl: request.url });
+    if (result.desktop) {
+      // The desktop app sees the new account through its live query; the browser tab only needs to say so.
+      return page("error" in result ? result.error : `${result.handle} is connected. You can close this tab and go back to BuddySocials.`);
+    }
     if ("error" in result) return back({ error: result.error });
     return back({ connected: result.platform, handle: result.handle, ...(result.existing ? { existing: "1" } : {}) });
   }),

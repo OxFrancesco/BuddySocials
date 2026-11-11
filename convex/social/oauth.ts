@@ -100,12 +100,17 @@ export function toCredential(token: OAuthTokenSet): PlatformCredential {
   };
 }
 
-/** Returns a refreshed credential when the stored one expires within five minutes. */
+/**
+ * Returns a refreshed credential when the stored one is about to expire. Most platforms
+ * refresh with a separate refresh token, so five minutes ahead is enough. Instagram extends
+ * the access token itself and refuses once it has expired, so it refreshes a week ahead.
+ */
 export async function refreshIfNeeded(
   platform: Platform,
   credential: PlatformCredential,
 ): Promise<PlatformCredential | null> {
-  if (credential.expiresAt === undefined || credential.expiresAt - Date.now() > 5 * 60_000) return null;
+  const ahead = platform === "instagram" ? 7 * 86_400_000 : 5 * 60_000;
+  if (credential.expiresAt === undefined || credential.expiresAt - Date.now() > ahead) return null;
   const app = appCredentials(platform);
   if (app === null || (!credential.refreshToken && platform !== "instagram")) return null;
   const next = await refreshOAuthToken(platform, app, {

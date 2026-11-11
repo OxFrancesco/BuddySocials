@@ -49,7 +49,7 @@ function askForAccount(platform: Platform, authorizationUrl: string): string {
 
 /** Starts the platform's OAuth consent flow and returns the URL the phone opens. */
 export const begin = action({
-  args: { platform: platformValidator, another: v.optional(v.boolean()) },
+  args: { platform: platformValidator, another: v.optional(v.boolean()), client: v.optional(v.literal("desktop")) },
   handler: async (ctx, args): Promise<string> => {
     const owner = await requireOwner(ctx);
     const redirectUri = callbackUri();
@@ -71,6 +71,7 @@ export const begin = action({
       codeVerifier,
       redirectUri,
       ...(started.providerState ? { providerState: started.providerState } : {}),
+      ...(args.client ? { client: args.client } : {}),
     });
     return args.another ? askForAccount(args.platform, started.authorizationUrl) : started.authorizationUrl;
   },
@@ -79,9 +80,12 @@ export const begin = action({
 /** Runs from the HTTP callback: exchanges the code, seals the token, creates the account. */
 export const complete = internalAction({
   args: { state: v.string(), callbackUrl: v.string() },
-  handler: async (ctx, args): Promise<{ platform: string; handle: string; existing: boolean } | { error: string }> => {
+  handler: async (ctx, args): Promise<
+    { platform: string; handle: string; existing: boolean; desktop: boolean } | { error: string; desktop: boolean }
+  > => {
     const attempt = await ctx.runMutation(internal.connectStore.takeAttempt, { state: args.state });
-    if (attempt === null) return { error: "That sign-in link expired. Try connecting again." };
+    if (attempt === null) return { error: "That sign-in link expired. Try connecting again.", desktop: false };
+    const desktop = attempt.client === "desktop";
     const tokens: { accountId: string; displayName: string; token: OAuthTokenSet }[] = [];
     try {
       const provider = providerFor(attempt.platform, attempt.redirectUri, (accountId, displayName, token) => {
@@ -105,7 +109,7 @@ export const complete = internalAction({
           expiresAt: new Date(now.getTime() + 60_000).toISOString(),
         },
       });
-      if (tokens.length === 0 || accounts.length === 0) return { error: "No account came back from the platform." };
+      if (tokens.length === 0 || accounts.length === 0) return { error: "No account came back from the platform.", desktop };
       let handle = "";
       let existing = true;
       for (const entry of tokens) {
@@ -124,10 +128,10 @@ export const complete = internalAction({
         handle = entry.displayName;
         existing &&= stored.existing;
       }
-      return { platform: attempt.platform, handle, existing };
+      return { platform: attempt.platform, handle, existing, desktop };
     } catch (error) {
       console.error("OAuth completion failed", attempt.platform, error);
-      return { error: "The platform did not accept the sign-in. Try again." };
+      return { error: "The platform did not accept the sign-in. Try again.", desktop };
     }
   },
 });

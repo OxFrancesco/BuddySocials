@@ -38,6 +38,7 @@ export const saveAttempt = internalMutation({
     codeVerifier: v.string(),
     providerState: v.optional(v.string()),
     redirectUri: v.string(),
+    client: v.optional(v.literal("desktop")),
   },
   handler: async (ctx, args) => {
     await ctx.db.insert("connectAttempts", { ...args, createdAt: Date.now() });

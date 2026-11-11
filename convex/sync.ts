@@ -68,7 +68,9 @@ function errorMessage(error: unknown): { message: string; reconnect: boolean } {
       rate_limited: "The platform asked us to slow down. Trying again later.",
       unsupported_capability: "This platform does not offer that data.",
     };
-    if (/HTTP 402/.test(error.message)) return { message: "The developer account is out of API credits.", reconnect: false };
+    if (error.code === "billing_required" || /HTTP 402/.test(error.message)) {
+      return { message: "The developer account is out of API credits.", reconnect: false };
+    }
     return { message: friendly[error.code] ?? error.message, reconnect };
   }
   return { message: error instanceof Error ? error.message : "Sync failed.", reconnect: false };
@@ -283,7 +285,11 @@ export const syncAccount = internalAction({
         let refused = 0;
         const lists = await mapLimit(recent, 4, async (post) => {
           const page = await part("comments", () =>
-            social.comments.list(platformPostRef({ ...ref, postId: post.platformPostId }), { limit: COMMENTS_PER_POST }),
+            social.comments.list(platformPostRef({ ...ref, postId: post.platformPostId }), { limit: COMMENTS_PER_POST }).catch((error: unknown) => {
+              // A post deleted since it was listed has no comments to read; the rest still do.
+              if (error instanceof SocialError && (error.code === "not_found" || error.code === "gone")) return { items: [] };
+              throw error;
+            }),
           );
           if (page === undefined) refused += 1;
           return (page?.items ?? []).flatMap((item) => {
@@ -343,10 +349,11 @@ export const sendReply = internalAction({
       { commentId: args.commentId },
     );
     if (target === null || target.comment.reply === undefined) return null;
-    const loaded = await load(ctx, target.comment.accountId);
-    if (loaded === null) return null;
-    const { account, social } = loaded;
     try {
+      // Inside the try: a failed token refresh has to mark the reply failed, not leave it "sending".
+      const loaded = await load(ctx, target.comment.accountId);
+      if (loaded === null) return null;
+      const { account, social } = loaded;
       await social.comments.reply(
         {
           ...platformPostRef({
