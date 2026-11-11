@@ -426,7 +426,7 @@ pub fn inbox(s: &App) -> El {
 pub fn goals(s: &App) -> El {
     let Some(data) = s.query("goals:list", json!({ "today": s.today() })) else { return ui::page("goals", None, el()) };
     let goals = data["goals"].as_array().map(Vec::as_slice).unwrap_or(&[]);
-    let mut list = col().padding(24.0).gap(24.0).max_w(720.0);
+    let mut list = col().px(24.0).pt(20.0).pb(32.0).gap(24.0);
     if goals.is_empty() {
         list = list.child(ui::empty("No goals yet. Set one from the phone app."));
     }
@@ -470,12 +470,12 @@ fn account_status(account: &Json, syncing: bool) -> (String, bool) {
 pub fn accounts(s: &App) -> El {
     let accounts = s.accounts();
     let available = s.query("connectStore:availability", json!({}));
-    let mut list = col().padding(24.0).max_w(720.0);
+    let mut list = col().px(24.0).pt(20.0).pb(32.0).gap(18.0);
     for platform in theme::PLATFORMS {
         let own: Vec<&Json> = accounts.iter().filter(|account| account["platform"] == platform).collect();
         let can_connect = available.is_some_and(|available| available[platform] == true);
         let has_direct = own.iter().any(|account| account["source"] == "direct");
-        let mut section = col().key(format!("platform-{platform}")).py(18.0).gap(14.0).border_sides([0.0, 0.0, 1.0, 0.0], theme::line());
+        let mut section = col().key(format!("platform-{platform}")).pb(18.0).gap(14.0).border_sides([0.0, 0.0, 1.0, 0.0], theme::line());
         let mut head = row().gap(12.0).center_y().child(text(theme::platform_label(platform).to_uppercase()).font(theme::display(20.0)).color(theme::FG).grow(1.0));
         if can_connect {
             let another = has_direct;
@@ -541,7 +541,7 @@ pub fn accounts(s: &App) -> El {
 
     let has_demo = accounts.iter().any(|account| account["source"] == "demo");
     let missing = theme::PLATFORMS.iter().any(|platform| !accounts.iter().any(|account| account["platform"] == *platform));
-    let mut foot = col().pt(24.0).gap(12.0).items_start();
+    let mut foot = col().pt(6.0).gap(12.0).items_start();
     if has_demo {
         foot = foot.child(ui::button("remove-demo", "Remove demo data", ui::Kind::Outline).on_press(|s: &mut App| s.mutate("accounts:removeDemo", json!({}))));
     } else if missing {

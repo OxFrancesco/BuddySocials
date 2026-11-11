@@ -40,7 +40,7 @@ pub fn chip(key: impl Into<String>, label: &str, active: bool) -> El {
         .key(key)
         .role("button")
         .label(label)
-        .h(30.0)
+        .h(32.0)
         .px(12.0)
         .center()
         .fill(if active { theme::FG } else { theme::BG })

@@ -23,8 +23,8 @@ const IMAGE_MAX_SIDE: u32 = 4096;
 /// Long side of the copy kept in memory for thumbnails and the crop preview.
 const PREVIEW_SIDE: u32 = 1280;
 const THUMB: f32 = 104.0;
-const STAGE_W: f32 = 620.0;
-const STAGE_H: f32 = 360.0;
+const STAGE_W: f32 = 560.0;
+const STAGE_H: f32 = 340.0;
 const HANDLE: f32 = 14.0;
 /// The smallest crop, as a share of the image, so a handle can always be grabbed again.
 const MIN_CROP: f32 = 0.06;

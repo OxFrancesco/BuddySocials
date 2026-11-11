@@ -522,7 +522,7 @@ pub fn view(s: &App, cx: &mut Cx<App>) -> El {
     let cell = ((available - PAD * 2.0 - GAP * (COLS - 1.0)) / COLS).floor().max(120.0);
     let row_h = (cell * 0.72).clamp(150.0, 210.0).round();
     let scale = cx.env().scale;
-    let mut grid = row().key("grid").padding(PAD).gap(GAP).flex_wrap().items_start();
+    let mut grid = row().key("grid").px(PAD).pt(20.0).pb(PAD).gap(GAP).flex_wrap().items_start();
     for item in layout {
         grid = grid.child(widget(s, item, cell, row_h, scale));
     }
