@@ -48,12 +48,11 @@ The `resources/` folder contains read-only clones of reference codebases.
 If you need to implement code specific to one of these codebases, read the relevant
 folder to gather information, feedback, patterns, and templates before writing code.
 
+- `resources/rune` — Rune GPU UI framework in Rust: crates/rune, examples/hello, headless PNG rendering
+- `resources/convex-rs` — Official Convex Rust client: ConvexClient, subscriptions, set_auth
 - `resources/social-sdk` — Social SDK direct Instagram and TikTok adapters for UGC publishing feasibility
-- `resources/react-native-dither-kit` — RN Skia port of Dither Kit charts (area/line/bar/pie/sparkline)
-- `resources/dither-kit` — Dither Kit official chart components and canvas engine
-- `resources/react-native-android-widget` — Android RemoteViews rendering, click handling and configuration reference
-- `resources/react-native-sortables` — Reanimated sortable grid/flex for drag-to-reorder
-- `resources/attentionmachine-skills` — Skills for demo videos with narration/SFX and landing pages
+- `resources/clerk-cli-auth-example` — Clerk reference for CLI sign-in with OAuth Authorization Code + PKCE and a loopback callback
+- `resources/convex-js` — Official Convex TypeScript client and React integration source, including React Native and Clerk provider patterns
 
 <!-- codeview:end -->
 
