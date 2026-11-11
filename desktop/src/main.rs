@@ -439,12 +439,22 @@ fn check_media(path: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Height of the empty band at the top of the window on macOS, where the close, minimise and zoom buttons sit.
+const TITLEBAR: f32 = if cfg!(target_os = "macos") { 36.0 } else { 0.0 };
+
 fn view(s: &App, cx: &mut Cx<App>) -> El {
-    match &s.auth {
+    let page = match &s.auth {
         AuthState::Loading => col().w_full().h_full().fill(theme::BG),
         AuthState::SignedOut | AuthState::WaitingForBrowser => sign_in(s),
         AuthState::SignedIn { .. } => shell(s, cx),
-    }
+    };
+    // The window's buttons are drawn over the content, so the content starts below them.
+    col()
+        .w_full()
+        .h_full()
+        .fill(theme::BG)
+        .child(rune::el().key("titlebar").w_full().h(TITLEBAR).window_drag())
+        .child(col().w_full().grow(1.0).min_h(0.0).child(page))
 }
 
 fn sign_in(s: &App) -> El {
