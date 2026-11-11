@@ -9,7 +9,7 @@ pub const DIM: Color = Color { r: 1.0, g: 1.0, b: 1.0, a: 0.7 };
 pub const FAINT: Color = Color { r: 1.0, g: 1.0, b: 1.0, a: 0.6 };
 pub const CLEAR: Color = Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
 
-fn srgb(hex: u32) -> Color {
+pub fn srgb(hex: u32) -> Color {
     let channel = |shift: u32| {
         let v = ((hex >> shift) & 0xff) as f32 / 255.0;
         if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }

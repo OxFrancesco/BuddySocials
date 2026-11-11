@@ -95,6 +95,8 @@ pub struct App {
     pub confirm_disconnect: Option<String>,
     pub notice: Option<String>,
     pub charts: RefCell<HashMap<String, Chart>>,
+    /// The chart under the pointer and how far along it, 0 to 1.
+    pub hover: Option<(String, f32)>,
     /// Image and video work running off the window's thread.
     pub jobs: media::Jobs,
     /// Names each attachment for as long as the app runs.
@@ -193,6 +195,7 @@ fn init() -> App {
         confirm_disconnect: None,
         notice: None,
         charts: RefCell::new(HashMap::new()),
+        hover: None,
         jobs: media::Jobs::default(),
         next_key: 0,
         now: fmt::now_ms(),
@@ -594,6 +597,10 @@ fn main() {
                 if let Some(draft) = &mut s.draft {
                     draft.editing = None;
                 }
+            }),
+            ("chart-hover", |s| {
+                let first = s.query("layouts:get", json!({})).and_then(Json::as_array).and_then(|widgets| widgets.iter().find(|w| w["type"] == "mix")).and_then(|w| w["id"].as_str()).map(str::to_string);
+                s.hover = first.map(|id| (id, 0.3));
             }),
             ("inbox", |s| s.tab = Tab::Inbox),
             ("goals", |s| s.tab = Tab::Goals),

@@ -144,8 +144,30 @@ fn change(value: Option<f64>) -> El {
     }
 }
 
-/// A dithered area chart, redrawn only when its numbers or size change.
-fn chart(s: &App, key: &str, width: f32, height: f32, scale: f32, series: &[Series<'_>]) -> El {
+/// What the pointer reads off a chart: a label for each point (dates) and a name for each series.
+#[derive(Default)]
+struct Readout {
+    labels: Vec<String>,
+    names: Vec<String>,
+}
+
+/// "2026-10-15" as "15 Oct".
+fn day_label(day: &str) -> String {
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let mut parts = day.split('-').skip(1).filter_map(|part| part.parse::<usize>().ok());
+    match (parts.next(), parts.next()) {
+        (Some(month @ 1..=12), Some(date)) => format!("{date} {}", MONTHS[month - 1]),
+        _ => day.to_string(),
+    }
+}
+
+fn days_of(overview: &Json) -> Vec<String> {
+    overview["days"].as_array().into_iter().flatten().filter_map(Json::as_str).map(day_label).collect()
+}
+
+/// A dithered area chart, redrawn only when its numbers or size change. Under the pointer it
+/// marks the nearest point and says its date and values.
+fn chart(s: &App, key: &str, width: f32, height: f32, scale: f32, series: &[Series<'_>], readout: &Readout) -> El {
     let (pw, ph) = ((width * scale).round().max(1.0) as usize, (height * scale).round().max(1.0) as usize);
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     (pw, ph).hash(&mut hasher);
@@ -162,7 +184,45 @@ fn chart(s: &App, key: &str, width: f32, height: f32, scale: f32, series: &[Seri
         cached.pixels.set(pw as u32, ph as u32, dither::area(pw, ph, series));
         cached.signature = signature;
     }
-    el().key(format!("{key}-chart")).size(width, height).pixels(&cached.pixels)
+    let (over, left) = (key.to_string(), key.to_string());
+    let mut stage = el()
+        .key(format!("{key}-chart"))
+        .size(width, height)
+        .on_pointer_move_local(move |s: &mut App, p, _| {
+            let at = (p.x / width).clamp(0.0, 1.0);
+            // Only a move to another point redraws, not every pixel of travel.
+            if s.hover.as_ref().is_none_or(|(key, was)| *key != over || (was - at).abs() > 0.002) {
+                s.hover = Some((over.clone(), at));
+            }
+        })
+        .on_hover_change(move |s: &mut App, inside, _| {
+            if !inside && s.hover.as_ref().is_some_and(|(key, _)| *key == left) {
+                s.hover = None;
+            }
+        })
+        .child(el().absolute(0.0, 0.0).size(width, height).pixels(&cached.pixels));
+    let points = series.iter().map(|entry| entry.values.len()).max().unwrap_or(0);
+    let Some(at) = s.hover.as_ref().filter(|(hovered, _)| hovered == key && points > 0).map(|(_, at)| *at) else { return stage };
+    let index = if points == 1 { 0 } else { (at * (points - 1) as f32).round() as usize };
+    let x = if points == 1 { width / 2.0 } else { index as f32 / (points - 1) as f32 * width };
+    let mut note = col().padding(6.0).gap(3.0).fill(theme::BG).border(1.0, theme::FG);
+    if let Some(label) = readout.labels.get(index) {
+        note = note.child(text(label.to_uppercase()).font(theme::label(9.0)).color(theme::DIM));
+    }
+    for (order, entry) in series.iter().enumerate() {
+        let Some(value) = entry.values.get(index) else { continue };
+        let [r, g, b] = entry.rgb;
+        let mut line = row().gap(5.0).center_y();
+        if series.len() > 1 {
+            line = line.child(el().size(7.0, 7.0).fill(theme::srgb(((r as u32) << 16) | ((g as u32) << 8) | b as u32)));
+        }
+        let name = readout.names.get(order).map(|name| format!("{name} ")).unwrap_or_default();
+        note = note.child(line.child(text(format!("{name}{}", fmt::grouped(*value))).font(theme::label(10.0)).color(theme::FG)));
+    }
+    stage = stage.child(el().key(format!("{key}-mark")).absolute((x - 0.5).clamp(0.0, width - 1.0), 0.0).size(1.0, height).fill(theme::FG.alpha(0.7)));
+    // The note sits on whichever side of the mark has room.
+    let note = note.key(format!("{key}-note"));
+    stage.child(if x < width / 2.0 { note.pin(Some(x + 8.0), Some(2.0), None, None) } else { note.pin(None, Some(2.0), Some(width - x + 8.0), None) })
 }
 
 struct Tile<'a> {
@@ -187,10 +247,10 @@ impl Tile<'_> {
     }
 
     /// A chart that runs to the tile's left, right and bottom edges.
-    fn bleed_chart(&self, height: f32, series: &[Series<'_>]) -> El {
+    fn bleed_chart(&self, height: f32, series: &[Series<'_>], readout: &Readout) -> El {
         // Up to the inside of the 2 pt outline, not over it.
         let bleed = TILE_PAD - 2.0;
-        chart(self.s, self.id, self.width + bleed * 2.0, height + bleed, self.scale, series).ml(-bleed).mb(-bleed)
+        chart(self.s, self.id, self.width + bleed * 2.0, height + bleed, self.scale, series, readout).ml(-bleed).mb(-bleed)
     }
 }
 
@@ -202,7 +262,7 @@ fn metric_body(tile: &Tile<'_>) -> El {
     }
     let head = col().gap(4.0).child(figure(fmt::compact(data.total), 34.0)).child(change(data.change));
     let series = [Series { values: &data.series, rgb: tile.accent() }];
-    col().grow(1.0).justify_between().child(head).child(tile.bleed_chart(tile.height - 70.0, &series))
+    col().grow(1.0).justify_between().child(head).child(tile.bleed_chart(tile.height - 70.0, &series, &Readout { labels: days_of(overview), names: Vec::new() }))
 }
 
 fn trend_body(tile: &Tile<'_>) -> El {
@@ -214,7 +274,7 @@ fn trend_body(tile: &Tile<'_>) -> El {
     let total = if tile.rows < 2.0 { fmt::compact(data.total) } else { fmt::grouped(data.total) };
     let head = row().gap(10.0).items_end().child(figure(total, if tile.rows < 2.0 { 26.0 } else { 34.0 })).child(change(data.change));
     let series = [Series { values: &data.series, rgb: tile.accent() }];
-    col().grow(1.0).justify_between().child(head).child(tile.bleed_chart(tile.height - 52.0, &series))
+    col().grow(1.0).justify_between().child(head).child(tile.bleed_chart(tile.height - 52.0, &series, &Readout { labels: days_of(overview), names: Vec::new() }))
 }
 
 fn legend(entries: &[(String, rune::Color)]) -> El {
@@ -285,7 +345,8 @@ fn mix_body(tile: &Tile<'_>) -> El {
     } else {
         // Biggest platform first, so the smaller areas draw over it.
         let series: Vec<Series<'_>> = data.by_platform.iter().map(|entry| Series { values: &entry.days, rgb: theme::platform_rgb(&entry.platform) }).collect();
-        tile.bleed_chart(tile.height - 34.0, &series)
+        let names = data.by_platform.iter().map(|entry| theme::platform_label(&entry.platform).to_string()).collect();
+        tile.bleed_chart(tile.height - 34.0, &series, &Readout { labels: days_of(overview), names })
     };
     col().grow(1.0).justify_between().child(legend(&keys)).child(body)
 }
@@ -308,7 +369,7 @@ fn platform_body(tile: &Tile<'_>) -> El {
     }
     let mut body = col().grow(1.0).justify_between().child(stats);
     if views.has_data {
-        body = body.child(tile.bleed_chart(tile.height - 62.0, &[Series { values: &views.series, rgb: tile.accent() }]));
+        body = body.child(tile.bleed_chart(tile.height - 62.0, &[Series { values: &views.series, rgb: tile.accent() }], &Readout { labels: days_of(overview), names: Vec::new() }));
     }
     body
 }
@@ -382,7 +443,7 @@ fn latest_post_body(tile: &Tile<'_>) -> El {
     let curve: Vec<f64> = latest["curve"].as_array().into_iter().flatten().filter_map(Json::as_f64).collect();
     let mut body = col().grow(1.0).justify_between().child(col().gap(12.0).child(head).child(stats));
     if tile.rows > 1.0 && curve.len() > 2 {
-        body = body.child(tile.bleed_chart(tile.height - 110.0, &[Series { values: &curve, rgb: theme::platform_rgb(platform) }]));
+        body = body.child(tile.bleed_chart(tile.height - 110.0, &[Series { values: &curve, rgb: theme::platform_rgb(platform) }], &Readout::default()));
     }
     body
 }
