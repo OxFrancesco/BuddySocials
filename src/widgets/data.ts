@@ -1,4 +1,3 @@
-import { useQuery } from "convex/react";
 import { useMemo } from "react";
 import { api } from "../../convex/_generated/api";
 import type { Overview } from "../../convex/dashboard";
@@ -7,6 +6,7 @@ import { percentChange } from "@shared/format";
 import type { Platform } from "@shared/platforms";
 import type { PlatformFilter } from "@shared/widgets";
 import { useToday } from "@/lib/hooks";
+import { useSyncedQuery } from "@/lib/sync";
 
 export type MetricView = {
   days: string[];
@@ -46,7 +46,7 @@ export function computeMetric(overview: Overview, metric: DashboardMetric, filte
 
 export function useOverview(range: number) {
   const today = useToday();
-  return useQuery(api.dashboard.overview, { today, days: range });
+  return useSyncedQuery(api.dashboard.overview, { today, days: range });
 }
 
 export function useMetric(metric: DashboardMetric, range: number, filter: PlatformFilter): MetricView | null | undefined {

@@ -93,9 +93,10 @@ export const storeConnection = internalMutation({
         handle: args.handle,
         displayName: args.displayName,
         status: "syncing",
+        syncStartedAt: Date.now(),
       });
     } else {
-      await ctx.db.patch("accounts", accountId, { status: "syncing", lastError: undefined, displayName: args.displayName });
+      await ctx.db.patch("accounts", accountId, { status: "syncing", syncStartedAt: Date.now(), lastError: undefined, displayName: args.displayName });
     }
     const credential = await ctx.db
       .query("credentials")
@@ -144,6 +145,6 @@ export const disconnect = mutation({
 export const setPlatformAccountId = internalMutation({
   args: { accountId: v.id("accounts"), platformAccountId: v.string() },
   handler: async (ctx, args) => {
-    await ctx.db.patch("accounts", args.accountId, { platformAccountId: args.platformAccountId, status: "syncing", lastError: undefined });
+    await ctx.db.patch("accounts", args.accountId, { platformAccountId: args.platformAccountId, status: "syncing", syncStartedAt: Date.now(), lastError: undefined });
   },
 });

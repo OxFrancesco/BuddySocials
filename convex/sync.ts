@@ -54,7 +54,11 @@ function chunks<T>(items: readonly T[], size: number): T[][] {
   return out;
 }
 
+/** The stored sign-in is missing or can't be read, so only signing in again helps. */
+class ReconnectError extends Error {}
+
 function errorMessage(error: unknown): { message: string; reconnect: boolean } {
+  if (error instanceof ReconnectError) return { message: "Sign in to this account again.", reconnect: true };
   if (error instanceof SocialError) {
     const reconnect = error.code === "reconnect_required" || error.code === "unauthorized";
     const friendly: Record<string, string> = {
@@ -75,6 +79,7 @@ async function load(ctx: ActionCtx, accountId: Id<"accounts">) {
     await ctx.runQuery(internal.accounts.getInternal, { accountId });
   if (loaded === null) return null;
   let credential = loaded.sealed === null ? null : openCredential(loaded.sealed);
+  if (credential === null && loaded.account.source === "direct") throw new ReconnectError();
   if (credential !== null) {
     const refreshed = await refreshIfNeeded(loaded.account.platform, credential);
     if (refreshed !== null) {
@@ -107,7 +112,17 @@ async function instagramViews(postId: string, accessToken: string): Promise<Metr
 export const syncAccount = internalAction({
   args: { accountId: v.id("accounts"), backfill: v.boolean() },
   handler: async (ctx, args) => {
-    const loaded = await load(ctx, args.accountId);
+    // Loading refreshes the token, which fails when the sign-in was revoked or expired.
+    // That has to end the sync like any other failure, or the account stays "syncing".
+    let loaded: Awaited<ReturnType<typeof load>>;
+    try {
+      loaded = await load(ctx, args.accountId);
+    } catch (error) {
+      const { message, reconnect } = errorMessage(error);
+      console.error("sync load", error instanceof SocialError ? `${error.code} ${error.operation ?? ""} ${error.message}` : String(error));
+      await ctx.runMutation(internal.accounts.finishSync, { accountId: args.accountId, error: message, reconnect });
+      return null;
+    }
     if (loaded === null) return null;
     const { account, adapter, social, credential } = loaded;
     const platform = account.platform;
@@ -156,6 +171,14 @@ export const syncAccount = internalAction({
           await ctx.runMutation(internal.ingest.days, { accountId: account._id, rows: batch });
         }
       }
+
+      // Followers are one independent call; start it now so it overlaps the post reads.
+      const followersRead = supports(manifest, "analytics.account.read", platform)
+        ? part("followers", () => social.analytics.getAccountMetrics(ref)).then(
+            (metrics) => ({ metrics }),
+            (error: unknown) => ({ error }),
+          )
+        : null;
 
       // 2. Recent posts and their counters, in as few calls as each platform allows.
       const direct = adapter.id !== "demo" && credential ? credential.accessToken : null;
@@ -230,8 +253,10 @@ export const syncAccount = internalAction({
 
       // 3. Followers.
       let followers: number | undefined;
-      if (supports(manifest, "analytics.account.read", platform)) {
-        const metrics = await part("followers", () => social.analytics.getAccountMetrics(ref));
+      if (followersRead !== null) {
+        const read = await followersRead;
+        if ("error" in read) throw read.error;
+        const metrics = read.metrics;
         followers = metrics ? followersFrom(metrics) : undefined;
         if (followers !== undefined) {
           await ctx.runMutation(internal.ingest.followers, { accountId: account._id, total: followers, takenAt: now });
@@ -305,22 +330,6 @@ export const syncAccount = internalAction({
       // The friendly message hides the cause; keep the platform's own error in the logs (no tokens in it).
       console.error(`sync ${platform}`, error instanceof SocialError ? `${error.code} ${error.operation ?? ""} ${error.message}` : String(error));
       await ctx.runMutation(internal.accounts.finishSync, { accountId: account._id, error: message, reconnect });
-    }
-    return null;
-  },
-});
-
-/** Hourly. X is billed per read, so X accounts sync every three hours. */
-export const syncAll = internalAction({
-  args: {},
-  handler: async (ctx) => {
-    const accounts: Doc<"accounts">[] = await ctx.runQuery(internal.accounts.listAllInternal, {});
-    const now = Date.now();
-    for (const account of accounts) {
-      if (account.status === "reconnect") continue;
-      const every = account.platform === "x" && account.source === "direct" ? 3 * 3_600_000 : 50 * 60_000;
-      if (account.lastSyncedAt !== undefined && now - account.lastSyncedAt < every) continue;
-      await ctx.scheduler.runAfter(0, internal.sync.syncAccount, { accountId: account._id, backfill: false });
     }
     return null;
   },

@@ -24,6 +24,10 @@ export default defineSchema({
     ),
     followers: v.optional(v.number()),
     lastSyncedAt: v.optional(v.number()),
+    /** When the running sync was claimed. A claim older than SYNC_STALE_MS is treated as abandoned. */
+    syncStartedAt: v.optional(v.number()),
+    /** When the last sync ended, whether it worked or not. The hourly job spaces retries from this. */
+    lastAttemptAt: v.optional(v.number()),
     lastError: v.optional(v.string()),
     /** Parts of the account the platform doesn't share with this app, e.g. LinkedIn posts before approval. */
     limited: v.optional(v.array(v.string())),

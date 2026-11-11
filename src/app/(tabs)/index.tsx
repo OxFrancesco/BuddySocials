@@ -7,6 +7,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "../../../convex/_generated/api";
 import { relativeTime } from "@shared/format";
 import { useNow } from "@/lib/hooks";
+import { useSyncing } from "@/lib/sync";
 import { Button } from "@/ui/button";
 import { PlusButton } from "@/ui/plus";
 import { Body, Label } from "@/ui/text";
@@ -23,13 +24,15 @@ export default function Home() {
   const syncNow = useMutation(api.accounts.syncNow);
   const loadDemo = useMutation(api.accounts.loadDemo);
   const now = useNow();
-  const [refreshing, setRefreshing] = useState(false);
+  // "sending" until the server has claimed the syncs, then "waiting" for as long as one runs.
+  const [pull, setPull] = useState<"idle" | "sending" | "waiting">("idle");
+  const syncing = useSyncing();
+  const refreshing = pull === "sending" || (pull === "waiting" && syncing);
 
   const lastSync = accounts?.reduce<number | null>(
     (latest, account) => (account.lastSyncedAt && (!latest || account.lastSyncedAt > latest) ? account.lastSyncedAt : latest),
     null,
   );
-  const syncing = accounts?.some((account) => account.status === "syncing") ?? false;
 
   return (
     <View style={{ flex: 1, backgroundColor: color.bg }}>
@@ -72,11 +75,12 @@ export default function Home() {
               colors={[color.coral]}
               progressBackgroundColor={color.bg}
               onRefresh={async () => {
-                setRefreshing(true);
+                setPull("sending");
                 try {
                   await syncNow({});
-                } finally {
-                  setRefreshing(false);
+                  setPull("waiting");
+                } catch {
+                  setPull("idle");
                 }
               }}
             />

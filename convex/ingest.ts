@@ -122,10 +122,13 @@ export const posts = internalMutation({
         }
       } else {
         postId = existing._id;
+        // A platform sometimes leaves a counter out of one read. Keeping the stored value stops
+        // the next read from counting the whole lifetime total as today's growth.
+        const counters = { ...existing.counters, ...input.counters };
         if (args.deltaDaily) {
-          await addToDay(ctx, account, today, minus(asDayCounters(input.counters), asDayCounters(existing.counters)));
+          await addToDay(ctx, account, today, minus(asDayCounters(counters), asDayCounters(existing.counters)));
         }
-        await ctx.db.patch("posts", existing._id, { ...fields, lastSyncedAt: args.takenAt });
+        await ctx.db.patch("posts", existing._id, { ...fields, counters, native: { ...existing.native, ...input.native }, lastSyncedAt: args.takenAt });
       }
 
       const last = await ctx.db

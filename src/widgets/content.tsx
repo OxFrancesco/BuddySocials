@@ -1,4 +1,3 @@
-import { useQuery } from "convex/react";
 import { router } from "expo-router";
 import { Pressable, View } from "react-native";
 import { Sparkline } from "react-native-dither-kit";
@@ -6,6 +5,7 @@ import { api } from "../../convex/_generated/api";
 import { compact, relativeTime } from "@shared/format";
 import { PLATFORM_COLOR } from "@shared/platforms";
 import { useHour, useNow, useToday } from "@/lib/hooks";
+import { useSyncedQuery } from "@/lib/sync";
 import { Byline } from "@/ui/byline";
 import { GoalCard } from "@/ui/goal-card";
 import { Thumb } from "@/ui/thumb";
@@ -22,7 +22,7 @@ export function TopPostsBody({ config, height, cols }: WidgetBodyProps) {
   const rowHeight = 44;
   const perColumn = Math.max(1, Math.floor((height - 40) / rowHeight));
   const columns = cols >= 4 ? 2 : 1;
-  const posts = useQuery(api.dashboard.topPosts, {
+  const posts = useSyncedQuery(api.dashboard.topPosts, {
     since: hour - config.range * 86_400_000,
     metric: config.metric,
     limit: perColumn * columns,
@@ -63,7 +63,7 @@ export function TopPostsBody({ config, height, cols }: WidgetBodyProps) {
 
 export function LatestPostBody({ config, rows }: WidgetBodyProps) {
   const now = useNow();
-  const latest = useQuery(api.dashboard.latestPost, platformArg(config.platform));
+  const latest = useSyncedQuery(api.dashboard.latestPost, platformArg(config.platform));
   if (latest === undefined) return <Loading />;
   if (latest === null) return <Empty text="No posts yet" />;
   const { post, curve } = latest;
@@ -112,7 +112,7 @@ export function LatestPostBody({ config, rows }: WidgetBodyProps) {
 
 export function InboxBody({ config, rows }: WidgetBodyProps) {
   const now = useNow();
-  const summary = useQuery(api.comments.openSummary, platformArg(config.platform));
+  const summary = useSyncedQuery(api.comments.openSummary, platformArg(config.platform));
   if (summary === undefined) return <Loading />;
   if (summary.count === 0) return <Empty text="All caught up" />;
   const show = rows === 1 ? 2 : 3;
@@ -145,7 +145,7 @@ export function InboxBody({ config, rows }: WidgetBodyProps) {
 
 export function GoalsBody({ height }: WidgetBodyProps) {
   const today = useToday();
-  const data = useQuery(api.goals.list, { today });
+  const data = useSyncedQuery(api.goals.list, { today });
   if (data === undefined) return <Loading />;
   const active = (data?.goals ?? []).filter((goal) => goal.state !== "missed");
   if (active.length === 0) return <Empty text="No goals yet" />;
