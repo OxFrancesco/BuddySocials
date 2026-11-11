@@ -23,6 +23,7 @@ import type * as layouts from "../layouts.js";
 import type * as lib_owner from "../lib/owner.js";
 import type * as mcp from "../mcp.js";
 import type * as media from "../media.js";
+import type * as mediaImport from "../mediaImport.js";
 import type * as profiles from "../profiles.js";
 import type * as publish from "../publish.js";
 import type * as social_batch from "../social/batch.js";
@@ -55,6 +56,7 @@ declare const fullApi: ApiFromModules<{
   "lib/owner": typeof lib_owner;
   mcp: typeof mcp;
   media: typeof media;
+  mediaImport: typeof mediaImport;
   profiles: typeof profiles;
   publish: typeof publish;
   "social/batch": typeof social_batch;

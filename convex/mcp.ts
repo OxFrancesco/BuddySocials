@@ -103,6 +103,12 @@ async function ownerFor(ctx: ActionCtx, request: Request): Promise<string | Resp
 }
 
 const accountIds = { type: "array", items: { type: "string" }, description: "Account IDs from list_accounts." };
+const mediaIds = {
+  type: "array",
+  items: { type: "string" },
+  description:
+    "Images or one video to attach, as media IDs from add_media_from_url or create_media_upload. Up to 4 images, or 1 video on its own. On an existing draft this replaces its attachments; omit it to leave them as they are.",
+};
 
 const TOOLS = [
   {
@@ -120,7 +126,12 @@ const TOOLS = [
     description: "Creates a draft, or updates one when draft_id is given. Nothing is posted.",
     inputSchema: {
       type: "object",
-      properties: { text: { type: "string" }, account_ids: accountIds, draft_id: { type: "string", description: "Omit to create a new draft." } },
+      properties: {
+        text: { type: "string" },
+        account_ids: accountIds,
+        media_ids: mediaIds,
+        draft_id: { type: "string", description: "Omit to create a new draft." },
+      },
       required: ["text", "account_ids"],
       additionalProperties: false,
     },
@@ -138,7 +149,29 @@ const TOOLS = [
   {
     name: "publish_post",
     description: "Posts text to the given accounts right away. This is public and cannot be undone here. Use save_draft to keep it for later.",
-    inputSchema: { type: "object", properties: { text: { type: "string" }, account_ids: accountIds }, required: ["text", "account_ids"], additionalProperties: false },
+    inputSchema: {
+      type: "object",
+      properties: { text: { type: "string" }, account_ids: accountIds, media_ids: mediaIds },
+      required: ["text", "account_ids"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "add_media_from_url",
+    description:
+      "Fetches an image or video from a public https link and stores it. Returns a media_id to pass as media_ids to save_draft or publish_post. Images up to 20 MB; videos up to 200 MB, MP4 for X and LinkedIn.",
+    inputSchema: {
+      type: "object",
+      properties: { url: { type: "string", description: "A public https link to the file itself." }, filename: { type: "string" } },
+      required: ["url"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "create_media_upload",
+    description:
+      "For a file on your own machine: returns a one-hour upload_url. POST the file's raw bytes to it with the file's Content-Type header (image/jpeg, image/png, video/mp4). The JSON answer has storageId; pass that as a media_id in media_ids.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
 ] as const;
 
@@ -150,6 +183,21 @@ function text(value: unknown): string {
 function ids(value: unknown): Id<"accounts">[] {
   if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) throw new Error("account_ids must be a list of account IDs.");
   return value as Id<"accounts">[];
+}
+
+/** Registers each named upload for this owner and returns the IDs, or undefined when none were given. */
+async function media(ctx: ActionCtx, owner: string, value: unknown): Promise<Id<"_storage">[] | undefined> {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) throw new Error("media_ids must be a list of media IDs.");
+  for (const storageId of value as Id<"_storage">[]) {
+    try {
+      await ctx.runMutation(internal.media.attachInternal, { owner, storageId });
+    } catch (error) {
+      // An ID that was never an upload fails before it reaches the server's own wording.
+      throw new Error(String(error).includes("Uncaught Error: ") ? readable(error) : `${storageId} is not a media ID from add_media_from_url or create_media_upload.`);
+    }
+  }
+  return value as Id<"_storage">[];
 }
 
 function draftId(value: unknown): Id<"drafts"> {
@@ -164,10 +212,12 @@ async function callTool(ctx: ActionCtx, owner: string, name: string, args: Recor
     case "list_drafts":
       return await ctx.runQuery(internal.drafts.listInternal, { owner });
     case "save_draft": {
+      const attached = await media(ctx, owner, args["media_ids"]);
       const id = await ctx.runMutation(internal.drafts.saveInternal, {
         owner,
         text: text(args["text"]),
         accountIds: ids(args["account_ids"]),
+        ...(attached ? { mediaIds: attached } : {}),
         ...(args["draft_id"] !== undefined ? { draftId: draftId(args["draft_id"]) } : {}),
       });
       return { draft_id: id };
@@ -180,10 +230,30 @@ async function callTool(ctx: ActionCtx, owner: string, name: string, args: Recor
       return { queued, note: "Publishing runs in the background. Call list_drafts to see the result on each platform." };
     }
     case "publish_post": {
-      const id = await ctx.runMutation(internal.drafts.saveInternal, { owner, text: text(args["text"]), accountIds: ids(args["account_ids"]) });
+      const attached = await media(ctx, owner, args["media_ids"]);
+      const id = await ctx.runMutation(internal.drafts.saveInternal, {
+        owner,
+        text: text(args["text"]),
+        accountIds: ids(args["account_ids"]),
+        ...(attached ? { mediaIds: attached } : {}),
+      });
       const queued = await ctx.runMutation(internal.drafts.publishInternal, { owner, draftId: id });
       return { draft_id: id, queued, note: "Publishing runs in the background. Call list_drafts to see the result on each platform." };
     }
+    case "add_media_from_url": {
+      if (typeof args["url"] !== "string") throw new Error("url is required.");
+      const stored = await ctx.runAction(internal.mediaImport.fromUrl, {
+        owner,
+        url: args["url"],
+        ...(typeof args["filename"] === "string" ? { filename: args["filename"] } : {}),
+      });
+      return { media_id: stored.storageId, kind: stored.kind, mime_type: stored.mimeType, bytes: stored.byteSize };
+    }
+    case "create_media_upload":
+      return {
+        upload_url: await ctx.runMutation(internal.media.uploadUrlInternal, {}),
+        how: "POST the file's raw bytes to upload_url with its Content-Type header. The JSON answer has storageId; pass it in media_ids.",
+      };
     default:
       throw new Error(`Unknown tool: ${name}`);
   }

@@ -67,48 +67,61 @@ export async function discard(ctx: MutationCtx, storageId: Id<"_storage">) {
 }
 
 /**
- * Registers a file the client just uploaded and returns what the server knows about it.
+ * Registers a file that was just uploaded and returns what the server knows about it.
  * Its type and size come from storage, so a draft never holds numbers a client made up.
  */
+async function attachFor(ctx: MutationCtx, owner: string, args: { storageId: Id<"_storage">; filename?: string }) {
+  const existing = await uploadFor(ctx, args.storageId);
+  if (existing !== null && existing.owner !== owner) throw new Error("File not found.");
+  const file = await ctx.db.system.get("_storage", args.storageId);
+  if (file === null) throw new Error("File not found.");
+  const kind: DraftMediaKind | null = mediaKindOf(file.contentType ?? "");
+  const tooBig = kind === "image" ? file.size > MAX_IMAGE_BYTES : file.size > MAX_VIDEO_BYTES;
+  if (existing === null && (kind === null || tooBig)) {
+    await ctx.storage.delete(args.storageId);
+    if (kind === null) throw new Error("Only images and videos can be attached.");
+    throw new Error(kind === "image" ? "Images can be up to 20 MB." : "Videos can be up to 200 MB. Trim it or export it smaller.");
+  }
+  const filename = args.filename?.trim().slice(0, 200) || undefined;
+  const upload =
+    existing ??
+    (await ctx.db.get(
+      "uploads",
+      await ctx.db.insert("uploads", {
+        owner,
+        storageId: args.storageId,
+        kind: kind!,
+        mimeType: file.contentType!,
+        byteSize: file.size,
+        ...(filename ? { filename } : {}),
+        ...unusedFields(Date.now(), await cleanupDays(ctx, owner)),
+      }),
+    ))!;
+  return {
+    storageId: upload.storageId,
+    kind: upload.kind,
+    mimeType: upload.mimeType,
+    byteSize: upload.byteSize,
+    filename: upload.filename ?? null,
+    url: await ctx.storage.getUrl(upload.storageId),
+  };
+}
+
 export const attach = mutation({
   args: { storageId: v.id("_storage"), filename: v.optional(v.string()) },
-  handler: async (ctx, args) => {
-    const owner = await requireOwner(ctx);
-    const existing = await uploadFor(ctx, args.storageId);
-    if (existing !== null && existing.owner !== owner) throw new Error("File not found.");
-    const file = await ctx.db.system.get("_storage", args.storageId);
-    if (file === null) throw new Error("File not found.");
-    const kind: DraftMediaKind | null = mediaKindOf(file.contentType ?? "");
-    const tooBig = kind === "image" ? file.size > MAX_IMAGE_BYTES : file.size > MAX_VIDEO_BYTES;
-    if (existing === null && (kind === null || tooBig)) {
-      await ctx.storage.delete(args.storageId);
-      if (kind === null) throw new Error("Only images and videos can be attached.");
-      throw new Error(kind === "image" ? "Images can be up to 20 MB." : "Videos can be up to 200 MB. Trim it or export it smaller.");
-    }
-    const filename = args.filename?.trim().slice(0, 200) || undefined;
-    const upload =
-      existing ??
-      (await ctx.db.get(
-        "uploads",
-        await ctx.db.insert("uploads", {
-          owner,
-          storageId: args.storageId,
-          kind: kind!,
-          mimeType: file.contentType!,
-          byteSize: file.size,
-          ...(filename ? { filename } : {}),
-          ...unusedFields(Date.now(), await cleanupDays(ctx, owner)),
-        }),
-      ))!;
-    return {
-      storageId: upload.storageId,
-      kind: upload.kind,
-      mimeType: upload.mimeType,
-      byteSize: upload.byteSize,
-      filename: upload.filename ?? null,
-      url: await ctx.storage.getUrl(upload.storageId),
-    };
-  },
+  handler: async (ctx, args) => attachFor(ctx, await requireOwner(ctx), args),
+});
+
+// The MCP server has already verified who is calling, so these take the owner directly.
+
+export const attachInternal = internalMutation({
+  args: { owner: v.string(), storageId: v.id("_storage"), filename: v.optional(v.string()) },
+  handler: async (ctx, { owner, ...args }) => attachFor(ctx, owner, args),
+});
+
+export const uploadUrlInternal = internalMutation({
+  args: {},
+  handler: async (ctx) => await ctx.storage.generateUploadUrl(),
 });
 
 async function unusedFor(ctx: QueryCtx, owner: string) {

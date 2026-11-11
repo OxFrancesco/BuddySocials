@@ -108,9 +108,8 @@ async function saveFor(
         media.push(kept);
         continue;
       }
-      if (upload.owner !== owner || (upload.draftId !== undefined && upload.draftId !== draft?._id)) {
-        throw new Error("An attachment is missing. Add it again.");
-      }
+      if (upload.owner !== owner) throw new Error("An attachment is missing. Add it again.");
+      if (upload.draftId !== undefined && upload.draftId !== draft?._id) throw new Error("That file is already on another draft. Add it again to use it here.");
       uploads.push(upload);
       media.push({
         storageId: upload.storageId,
@@ -234,8 +233,14 @@ export const listInternal = internalQuery({
 });
 
 export const saveInternal = internalMutation({
-  args: { owner: v.string(), ...saveArgs },
-  handler: async (ctx, { owner, ...args }) => saveFor(ctx, owner, args),
+  /** `mediaIds` names uploads by their storage ID; omit it to leave a draft's attachments as they are. */
+  args: { owner: v.string(), draftId: saveArgs.draftId, text: saveArgs.text, accountIds: saveArgs.accountIds, mediaIds: v.optional(v.array(v.id("_storage"))) },
+  handler: async (ctx, { owner, mediaIds, ...args }) =>
+    // saveFor replaces these with the server's own record of each upload.
+    saveFor(ctx, owner, {
+      ...args,
+      ...(mediaIds ? { media: mediaIds.map((storageId) => ({ storageId, kind: "image" as const, mimeType: "", byteSize: 0 })) } : {}),
+    }),
 });
 
 export const removeInternal = internalMutation({
