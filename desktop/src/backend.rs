@@ -3,6 +3,7 @@
 //! arrive as events that `poll` folds into state.
 
 use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -52,6 +53,10 @@ pub enum Cmd {
     PublishDraft { draft: Json },
     /// Starts connecting a platform account; the browser does the rest.
     Connect { platform: String, another: bool },
+    /// Sends a file to storage and registers it, so a draft can hold it.
+    Upload { key: u64, path: PathBuf, mime: String, name: String },
+    /// Fetches a saved attachment to a local file.
+    Download { key: u64, url: String, to: PathBuf },
 }
 
 pub enum Event {
@@ -60,6 +65,9 @@ pub enum Event {
     Data { key: String, value: Json },
     /// Something the person should read, already worded for them.
     Notice(String),
+    /// The server's record of an uploaded file, or why it didn't arrive.
+    Uploaded { key: u64, result: Result<Json, String> },
+    Downloaded { key: u64, result: Result<PathBuf, String> },
 }
 
 enum Internal {
@@ -226,6 +234,21 @@ async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, out: Out) {
                             }
                         });
                     }
+                    Cmd::Upload { key, path, mime, name } => {
+                        let mut client = client.clone();
+                        let out = out.clone();
+                        tokio::spawn(async move {
+                            let result = upload(&mut client, &path, &mime, &name).await;
+                            out.push(Event::Uploaded { key, result });
+                        });
+                    }
+                    Cmd::Download { key, url, to } => {
+                        let out = out.clone();
+                        tokio::spawn(async move {
+                            let result = download(&url, &to).await.map(|()| to).map_err(|_| "This attachment could not be loaded.".to_string());
+                            out.push(Event::Downloaded { key, result });
+                        });
+                    }
                     Cmd::Connect { platform, another } => {
                         let mut client = client.clone();
                         let out = out.clone();
@@ -263,6 +286,49 @@ async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, out: Out) {
             }
         }
     }
+}
+
+/// Uploads a file in three steps: ask where, send the bytes, tell the server it arrived.
+pub async fn upload(client: &mut ConvexClient, path: &Path, mime: &str, name: &str) -> Result<Json, String> {
+    let failed = || "The upload didn't go through. Try again.".to_string();
+    let target = match client.mutation("drafts:generateUploadUrl", BTreeMap::new()).await {
+        Ok(FunctionResult::Value(Value::String(url))) => url,
+        Ok(result) => return Err(failure(&result).unwrap_or_else(failed)),
+        Err(_) => return Err(failed()),
+    };
+    let file = tokio::fs::File::open(path).await.map_err(|_| "That file could not be read.".to_string())?;
+    let length = file.metadata().await.map_err(|_| failed())?.len();
+    // Streamed from disk, so a large video never sits in memory whole.
+    let response = reqwest::Client::new()
+        .post(target)
+        .header(reqwest::header::CONTENT_TYPE, mime)
+        .header(reqwest::header::CONTENT_LENGTH, length)
+        .body(reqwest::Body::from(file))
+        .send()
+        .await
+        .map_err(|_| failed())?;
+    if !response.status().is_success() {
+        return Err(failed());
+    }
+    let stored: Json = response.json().await.map_err(|_| failed())?;
+    let Some(storage_id) = stored["storageId"].as_str() else { return Err(failed()) };
+    let args = serde_json::json!({ "storageId": storage_id, "filename": name });
+    match client.mutation("media:attach", args_of(&args.to_string())).await {
+        Ok(FunctionResult::Value(value)) => Ok(Json::from(value)),
+        Ok(result) => Err(failure(&result).unwrap_or_else(failed)),
+        Err(_) => Err(failed()),
+    }
+}
+
+async fn download(url: &str, to: &Path) -> anyhow::Result<()> {
+    use tokio::io::AsyncWriteExt;
+    let mut response = reqwest::get(url).await?.error_for_status()?;
+    let mut file = tokio::fs::File::create(to).await?;
+    while let Some(chunk) = response.chunk().await? {
+        file.write_all(&chunk).await?;
+    }
+    file.flush().await?;
+    Ok(())
 }
 
 /// A fresh session, the same one when the network is down, or none when the sign-in is no longer valid.

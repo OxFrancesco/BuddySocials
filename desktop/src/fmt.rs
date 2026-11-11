@@ -94,3 +94,15 @@ pub fn relative_time(timestamp_ms: f64, now_ms: f64) -> String {
     }
     short_date(timestamp_ms)
 }
+
+/// A file size for people: "840 KB", "4.2 MB".
+pub fn bytes(bytes: f64) -> String {
+    const MB: f64 = 1024.0 * 1024.0;
+    if bytes < MB {
+        format!("{} KB", (bytes / 1024.0).round().max(1.0))
+    } else if bytes < MB * 1024.0 {
+        format!("{:.1} MB", bytes / MB)
+    } else {
+        format!("{:.1} GB", bytes / (MB * 1024.0))
+    }
+}

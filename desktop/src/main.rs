@@ -7,6 +7,7 @@ mod config;
 mod dither;
 mod fmt;
 mod home;
+mod media;
 mod pages;
 mod theme;
 mod ui;
@@ -55,6 +56,19 @@ pub struct DraftEdit {
     pub accounts: Vec<String>,
     /// Publishing is public, so the button asks once more before it sends.
     pub confirming: bool,
+    pub media: Vec<media::Item>,
+    /// The attachment being cropped or trimmed.
+    pub editing: Option<media::Edit>,
+    /// Files are being dragged over the draft.
+    pub drop_over: bool,
+}
+
+impl DraftEdit {
+    pub fn new(id: Option<String>, text: &str, accounts: Vec<String>) -> DraftEdit {
+        let mut text = TextEdit::new(text);
+        text.focused = true;
+        DraftEdit { id, text, accounts, confirming: false, media: Vec::new(), editing: None, drop_over: false }
+    }
 }
 
 /// A chart's pixels and what they were drawn from, so it is only redrawn when that changes.
@@ -81,6 +95,10 @@ pub struct App {
     pub confirm_disconnect: Option<String>,
     pub notice: Option<String>,
     pub charts: RefCell<HashMap<String, Chart>>,
+    /// Image and video work running off the window's thread.
+    pub jobs: media::Jobs,
+    /// Names each attachment for as long as the app runs.
+    pub next_key: u64,
     /// Wall clock in milliseconds, refreshed by `poll`.
     pub now: f64,
 }
@@ -143,6 +161,7 @@ impl App {
             QuerySpec::new("dashboard:posts", self.posts_args()),
             QuerySpec::new("comments:list", self.inbox_args()),
             QuerySpec::new("drafts:list", json!({})),
+            QuerySpec::new("media:cleanup", json!({})),
         ];
         for widget in self.query("layouts:get", json!({})).and_then(Json::as_array).into_iter().flatten() {
             wanted.extend(home::queries_for(widget, &today, self.hour()));
@@ -174,6 +193,8 @@ fn init() -> App {
         confirm_disconnect: None,
         notice: None,
         charts: RefCell::new(HashMap::new()),
+        jobs: media::Jobs::default(),
+        next_key: 0,
         now: fmt::now_ms(),
     };
     // A saved dashboard, for rendering without a network (headless snapshots, tests).
@@ -190,6 +211,7 @@ fn init() -> App {
 }
 
 fn setup(s: &mut App, wake: rune::Waker) {
+    s.jobs.set_waker(wake.clone());
     if std::env::var_os("BUDDYSOCIALS_FIXTURE").is_some() {
         return;
     }
@@ -248,8 +270,11 @@ fn absorb(s: &mut App) -> (bool, Vec<String>) {
                 new_data = true;
             }
             Event::Notice(message) => s.notice = Some(message),
+            Event::Uploaded { key, result } => media::uploaded(s, key, result),
+            Event::Downloaded { key, result } => media::downloaded(s, key, result),
         }
     }
+    changed |= media::absorb(s);
     if new_data && matches!(s.auth, AuthState::SignedIn { .. }) {
         save_cache(&s.data);
     }
@@ -267,7 +292,8 @@ fn absorb(s: &mut App) -> (bool, Vec<String>) {
 }
 
 fn poll(s: &mut App, _clock: f64, tx: &mut Tx) -> bool {
-    let (changed, links) = absorb(s);
+    let (mut changed, links) = absorb(s);
+    changed |= media::tick(s, tx);
     for url in links {
         if tx.open_url(&url).is_err() {
             s.notice = Some("Could not open your browser.".into());
@@ -318,6 +344,99 @@ fn fetch(path: &str) -> Result<(), String> {
         }
     }
     Err("timed out".into())
+}
+
+/// Runs `absorb` until `done` says so. False when the time runs out.
+fn wait_for(app: &mut App, seconds: u64, done: impl Fn(&App) -> bool) -> bool {
+    let started = std::time::Instant::now();
+    while started.elapsed() < Duration::from_secs(seconds) {
+        std::thread::sleep(Duration::from_millis(200));
+        absorb(app);
+        if let Some(notice) = app.notice.take() {
+            eprintln!("NOTICE {notice}");
+        }
+        if done(app) {
+            return true;
+        }
+    }
+    false
+}
+
+/// `--check-media FILE`: without a window, with the stored sign-in, attaches FILE to a new draft
+/// through the same code the window runs, edits it, saves the draft, then deletes everything
+/// it made. Each line it prints is one step that worked.
+fn check_media(path: &str) -> Result<(), String> {
+    let settled = |app: &App| app.draft.as_ref().is_some_and(|draft| !media::working(draft) || draft.media.iter().any(|item| item.error.is_some()));
+    let first = |app: &App| -> Result<Json, String> {
+        let item = app.draft.as_ref().and_then(|draft| draft.media.first()).ok_or("the attachment is gone")?;
+        match (&item.error, &item.saved) {
+            (Some(error), _) => Err(error.clone()),
+            (None, Some(saved)) => Ok(saved.clone()),
+            (None, None) => Err("timed out".into()),
+        }
+    };
+    let unused = |app: &App| app.query("media:cleanup", json!({})).and_then(|state| state["files"].as_f64());
+    let mut app = init();
+    app.backend = Some(Backend::start(std::sync::Arc::new(|| {})));
+    if !wait_for(&mut app, 30, |app| matches!(app.auth, AuthState::SignedIn { .. }) && unused(app).is_some() && app.query("drafts:list", json!({})).is_some()) {
+        return Err("not signed in: open the app and sign in first".into());
+    }
+    let before = unused(&app).unwrap_or(0.0);
+    media::add(&mut app, &[std::path::PathBuf::from(path)]);
+    wait_for(&mut app, 180, settled);
+    let uploaded = first(&app)?;
+    println!("UPLOADED {uploaded}");
+    if !wait_for(&mut app, 20, |app| unused(app) == Some(before + 1.0)) {
+        return Err("the upload was not counted as unused".into());
+    }
+    println!("UNUSED {} -> {}", before, before + 1.0);
+    if app.draft.as_ref().is_some_and(|draft| draft.media[0].kind == media::Kind::Image) {
+        if !media::edit_first(&mut app) {
+            return Err("the editor did not open".into());
+        }
+        wait_for(&mut app, 180, settled);
+        let edited = first(&app)?;
+        if edited["storageId"] == uploaded["storageId"] {
+            return Err("the edit did not produce a new file".into());
+        }
+        println!("EDITED {edited}");
+    }
+    let kept = first(&app)?;
+    let draft = app.draft.take().ok_or("the draft is gone")?;
+    let mut saved = pages::draft_json(&draft);
+    saved["text"] = json!("media check (safe to delete)");
+    app.mutate("drafts:save", saved);
+    let mine = |app: &App| {
+        let drafts = app.query("drafts:list", json!({}))?.as_array()?;
+        drafts.iter().find(|draft| draft["text"] == "media check (safe to delete)").cloned()
+    };
+    if !wait_for(&mut app, 20, |app| mine(app).is_some()) {
+        return Err("the draft was not saved".into());
+    }
+    let stored = mine(&app).ok_or("the draft is gone")?;
+    if stored["media"][0]["storageId"] != kept["storageId"] || stored["media"][0]["url"].as_str().is_none() {
+        return Err(format!("the saved draft has the wrong attachment: {}", stored["media"]));
+    }
+    println!("SAVED draft with {} attachment, issues: {}", stored["media"].as_array().map(Vec::len).unwrap_or(0), stored["targets"]);
+    // The file the draft holds is no longer unused; the first upload still is when an edit replaced it.
+    let expected = if kept["storageId"] == uploaded["storageId"] { before } else { before + 1.0 };
+    if !wait_for(&mut app, 20, |app| unused(app) == Some(expected)) {
+        return Err(format!("unused files should be {expected}, found {:?}", unused(&app)));
+    }
+    println!("HELD unused is {expected}");
+    app.mutate("drafts:remove", json!({ "draftId": stored["_id"] }));
+    if !wait_for(&mut app, 20, |app| mine(app).is_none()) {
+        return Err("the draft was not deleted".into());
+    }
+    println!("REMOVED draft");
+    if expected > before {
+        app.mutate("media:cleanupNow", json!({}));
+        if !wait_for(&mut app, 20, |app| unused(app) == Some(0.0)) {
+            return Err("cleanup left files behind".into());
+        }
+        println!("CLEANED unused is 0");
+    }
+    Ok(())
 }
 
 fn view(s: &App, cx: &mut Cx<App>) -> El {
@@ -422,6 +541,13 @@ fn main() {
         }
         return;
     }
+    if let Some(path) = args.iter().position(|arg| arg == "--check-media").and_then(|at| args.get(at + 1)) {
+        if let Err(error) = check_media(path) {
+            eprintln!("media check failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     rune::run(AppSpec::<App> {
         min_size: Some((860.0, 560.0)),
         fonts: &[
@@ -440,7 +566,24 @@ fn main() {
                 s.tab = Tab::Posts;
                 s.show_drafts = true;
                 let accounts = s.accounts().iter().filter(|a| a["platform"] == "linkedin" || a["platform"] == "x").filter_map(|a| a["_id"].as_str().map(str::to_string)).collect();
-                s.draft = Some(DraftEdit { id: None, text: TextEdit::new("Shipping the desktop app this week. Same dashboard, bigger screen."), accounts, confirming: false });
+                s.draft = Some(DraftEdit::new(None, "Shipping the desktop app this week. Same dashboard, bigger screen.", accounts));
+            }),
+            ("media-editor", |s| {
+                s.tab = Tab::Posts;
+                s.show_drafts = true;
+                let accounts = s.accounts().iter().filter(|a| a["platform"] == "linkedin" || a["platform"] == "x").filter_map(|a| a["_id"].as_str().map(str::to_string)).collect();
+                s.draft = Some(DraftEdit::new(None, "Shipping the desktop app this week. Same dashboard, bigger screen.", accounts));
+                media::sample(s);
+            }),
+            ("draft-media", |s| {
+                s.tab = Tab::Posts;
+                s.show_drafts = true;
+                let accounts = s.accounts().iter().filter(|a| a["platform"] == "linkedin" || a["platform"] == "x").filter_map(|a| a["_id"].as_str().map(str::to_string)).collect();
+                s.draft = Some(DraftEdit::new(None, "Shipping the desktop app this week. Same dashboard, bigger screen.", accounts));
+                media::sample(s);
+                if let Some(draft) = &mut s.draft {
+                    draft.editing = None;
+                }
             }),
             ("inbox", |s| s.tab = Tab::Inbox),
             ("goals", |s| s.tab = Tab::Goals),

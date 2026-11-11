@@ -1,10 +1,10 @@
 //! Posts, Inbox, Goals and Accounts.
 
-use rune::{El, TextEdit, col, el, row, text, text_input};
+use rune::{El, col, el, row, text, text_input};
 use serde_json::{Value as Json, json};
 
 use crate::backend::{AuthState, Cmd};
-use crate::{App, DraftEdit, fmt, home, theme, ui};
+use crate::{App, DraftEdit, fmt, home, media, theme, ui};
 
 fn open(url: String) -> impl Fn(&mut App, &mut rune::Tx) {
     move |s, tx| {
@@ -41,10 +41,13 @@ fn view_switch(s: &App) -> El {
         .child(ui::chip("posts-drafts", "Drafts", s.show_drafts).on_press(|s: &mut App| s.show_drafts = true))
 }
 
-fn draft_json(edit: &DraftEdit) -> Json {
+pub fn draft_json(edit: &DraftEdit) -> Json {
     let mut draft = json!({ "text": edit.text.text.clone(), "accountIds": edit.accounts });
     if let Some(id) = &edit.id {
         draft["draftId"] = json!(id);
+    }
+    if let Some(records) = media::records(edit) {
+        draft["media"] = json!(records);
     }
     draft
 }
@@ -77,13 +80,12 @@ fn draft_editor(s: &App, edit: &DraftEdit) -> El {
             edit.confirming = false;
         }));
     }
-    let mut editor = col()
-        .key("draft-editor")
-        .mx(24.0)
-        .mb(24.0)
-        .padding(16.0)
-        .gap(14.0)
-        .border(2.0, theme::FG)
+    let frame = col().key("draft-editor").mx(24.0).mb(24.0).padding(16.0).gap(14.0).border(2.0, if edit.drop_over { theme::coral() } else { theme::FG });
+    // Cropping or trimming takes the whole panel, so the picture gets the room.
+    if let Some(editing) = &edit.editing {
+        return frame.child(media::editor(editing));
+    }
+    let mut editor = frame
         .child(
             col().min_h(120.0).child(
                 text_input(&edit.text, theme::mono(15.0))
@@ -92,9 +94,11 @@ fn draft_editor(s: &App, edit: &DraftEdit) -> El {
                     .color(theme::FG)
                     .caret(theme::coral(), theme::coral().alpha(0.4))
                     .placeholder("What do you want to post?", theme::FAINT)
+                    .on_input_paste(|s: &mut App, content, _| media::paste(s, content))
                     .on_edit(|s: &mut App| &mut s.draft.as_mut().expect("the editor is open").text),
             ),
         )
+        .child(media::strip(edit))
         .child(accounts);
     if !counts.is_empty() {
         let mut line = row().gap(16.0);
@@ -121,12 +125,18 @@ fn draft_editor(s: &App, edit: &DraftEdit) -> El {
         }
         editor = editor.child(line);
     }
-    let can_send = !edit.accounts.is_empty() && (length > 0);
+    // Nothing is saved or sent while a file is still on its way up, so a draft never loses an attachment.
+    let settled = !media::working(edit);
+    let can_send = settled && !edit.accounts.is_empty() && (length > 0 || !edit.media.is_empty());
     let mut actions = row().gap(8.0).center_y();
-    actions = actions.child(ui::button("draft-save", "Save", ui::Kind::Outline).on_press(|s: &mut App| {
-        let Some(edit) = s.draft.take() else { return };
-        s.mutate("drafts:save", draft_json(&edit));
-    }));
+    if settled {
+        actions = actions.child(ui::button("draft-save", "Save", ui::Kind::Outline).on_press(|s: &mut App| {
+            let Some(edit) = s.draft.take() else { return };
+            s.mutate("drafts:save", draft_json(&edit));
+        }));
+    } else {
+        actions = actions.child(text("FINISHING ATTACHMENTS").key("draft-waiting").font(theme::label(10.0)).color(theme::DIM));
+    }
     if can_send {
         actions = actions.child(
             ui::button("draft-publish", if edit.confirming { "Post it now" } else { "Publish" }, ui::Kind::Primary).on_press(|s: &mut App| {
@@ -153,11 +163,23 @@ fn draft_editor(s: &App, edit: &DraftEdit) -> El {
 
 fn drafts(s: &App) -> El {
     let bar = row().gap(8.0).center_y().child(view_switch(s)).child(col().grow(1.0)).child(ui::button("new-draft", "New draft", ui::Kind::Primary).on_press(|s: &mut App| {
-        let mut text = TextEdit::new("");
-        text.focused = true;
-        s.draft = Some(DraftEdit { id: None, text, accounts: Vec::new(), confirming: false });
+        s.draft = Some(DraftEdit::new(None, "", Vec::new()));
     }));
-    let mut content = col().pb(32.0);
+    // Files dropped anywhere on the page land on the open draft, or start one.
+    let mut content = col()
+        .pb(32.0)
+        .on_drop_files(|s: &mut App, files, _| {
+            media::add(s, files);
+            if let Some(draft) = &mut s.draft {
+                draft.drop_over = false;
+            }
+        })
+        .accepts_extensions(&media::EXTENSIONS)
+        .on_drop_hover(|s: &mut App, over, _| {
+            if let Some(draft) = &mut s.draft {
+                draft.drop_over = over;
+            }
+        });
     if let Some(edit) = &s.draft {
         content = content.child(draft_editor(s, edit));
     }
@@ -172,7 +194,8 @@ fn drafts(s: &App) -> El {
             continue;
         }
         let body = draft["text"].as_str().unwrap_or("");
-        let title = body.lines().find(|line| !line.trim().is_empty()).unwrap_or("Empty draft").to_string();
+        let attached = draft["media"].as_array().map(Vec::len).unwrap_or(0);
+        let title = body.lines().find(|line| !line.trim().is_empty()).unwrap_or(if attached > 0 { "No text" } else { "Empty draft" }).to_string();
         let (status, alert) = match draft["status"].as_str().unwrap_or("") {
             "publishing" => ("Publishing", false),
             "published" => ("Published", false),
@@ -185,7 +208,7 @@ fn drafts(s: &App) -> El {
             marks = marks.child(el().size(10.0, 10.0).fill(theme::platform_color(target["platform"].as_str().unwrap_or(""))));
         }
         let accounts: Vec<String> = draft["targets"].as_array().into_iter().flatten().filter_map(|target| target["accountId"].as_str().map(str::to_string)).collect();
-        let (open_id, open_text) = (id.clone(), body.to_string());
+        let (open_id, open_text, open_media) = (id.clone(), body.to_string(), draft["media"].clone());
         let mut line = row()
             .key(format!("draft-{id}"))
             .py(14.0)
@@ -195,19 +218,58 @@ fn drafts(s: &App) -> El {
             .cursor(rune::Cursor::Pointer)
             .hover(theme::FG.alpha(0.06))
             .on_press(move |s: &mut App| {
-                let mut text = TextEdit::new(open_text.clone());
-                text.focused = true;
-                s.draft = Some(DraftEdit { id: Some(open_id.clone()), text, accounts: accounts.clone(), confirming: false });
+                let mut opened = DraftEdit::new(Some(open_id.clone()), &open_text, accounts.clone());
+                opened.media = media::open_saved(s, &open_media);
+                s.draft = Some(opened);
             })
             .child(marks)
             .child(text(title).font(theme::mono(14.0)).color(theme::FG).truncate().grow(1.0).min_w(0.0));
+        if attached > 0 {
+            let videos = draft["media"].as_array().into_iter().flatten().filter(|item| item["kind"] == "video").count();
+            let what = match (attached - videos, videos) {
+                (images, 0) => format!("{images} image{}", if images == 1 { "" } else { "s" }),
+                (0, videos) => format!("{videos} video{}", if videos == 1 { "" } else { "s" }),
+                (images, videos) => format!("{} attachments", images + videos),
+            };
+            line = line.child(text(what.to_uppercase()).font(theme::label(10.0)).color(theme::DIM));
+        }
         if !status.is_empty() {
             line = line.child(text(status.to_uppercase()).font(theme::label(10.0)).color(if alert { theme::coral() } else { theme::DIM }));
         }
         line = line.child(text(fmt::relative_time(draft["updatedAt"].as_f64().unwrap_or(0.0), s.now).to_uppercase()).font(theme::label(10.0)).color(theme::FAINT));
         list = list.child(line);
     }
-    ui::page("drafts", Some(bar), content.child(list))
+    ui::page("drafts", Some(bar), content.child(list).child(cleanup(s)))
+}
+
+/// Unused uploads: when they are deleted, how much is waiting, and a button to delete them now.
+fn cleanup(s: &App) -> El {
+    let Some(state) = s.query("media:cleanup", json!({})).filter(|state| state.is_object()) else { return el() };
+    let after = state["afterDays"].as_f64();
+    let mut choices = row().gap(8.0).flex_wrap();
+    for days in state["options"].as_array().into_iter().flatten().filter_map(Json::as_f64) {
+        let label = if days == 1.0 { "1 day".to_string() } else { format!("{days} days") };
+        choices = choices.child(ui::chip(format!("cleanup-after-{days}"), &label, after == Some(days)).on_press(move |s: &mut App| s.mutate("media:setCleanup", json!({ "afterDays": days }))));
+    }
+    choices = choices.child(ui::chip("cleanup-after-never", "By hand", after.is_none()).on_press(|s: &mut App| s.mutate("media:setCleanup", json!({ "afterDays": null }))));
+    let files = state["files"].as_f64().unwrap_or(0.0);
+    let waiting = if files == 0.0 {
+        "No unused files.".to_string()
+    } else {
+        format!("{files}{} unused file{}, {}.", if state["more"] == true { "+" } else { "" }, if files == 1.0 { "" } else { "s" }, fmt::bytes(state["bytes"].as_f64().unwrap_or(0.0)))
+    };
+    let mut line = row().gap(16.0).center_y().child(text(waiting).key("cleanup-waiting").font(theme::mono(13.0)).color(theme::DIM));
+    if files > 0.0 {
+        line = line.child(ui::button("cleanup-now", "Delete now", ui::Kind::Outline).on_press(|s: &mut App| s.mutate("media:cleanupNow", json!({}))));
+    }
+    col()
+        .key("cleanup")
+        .px(24.0)
+        .pt(40.0)
+        .gap(12.0)
+        .child(text("DELETE UNUSED IMAGES AND VIDEOS AFTER").font(theme::label(10.0)).color(theme::DIM))
+        .child(choices)
+        .child(line)
 }
 
 pub fn posts(s: &App) -> El {
