@@ -81,7 +81,8 @@ async function ownerFor(ctx: ActionCtx, request: Request): Promise<string | Resp
   let email: unknown;
   try {
     const server = await authorizationServer(issuer);
-    const { payload } = await jwtVerify(token, server.keys, { issuer });
+    // The token must have been issued for this server, not for another app in the same WorkOS environment.
+    const { payload } = await jwtVerify(token, server.keys, { issuer, audience: resourceUrl() });
     email = payload["email"];
     if (typeof email !== "string" && server.userinfo) {
       // AuthKit access tokens carry the user ID; the email comes from the userinfo endpoint.
