@@ -30,6 +30,25 @@ export const availability = query({
   },
 });
 
+/**
+ * Whether "Add a LinkedIn Page" can be offered. Besides its keys, the Pages app needs LinkedIn to
+ * approve the Community Management API; until then LinkedIn refuses the sign-in, so the button
+ * stays hidden until LINKEDIN_PAGES_ENABLED is set.
+ */
+export const pagesAvailable = query({
+  args: {},
+  handler: async (ctx) => {
+    if ((await optionalOwner(ctx)) === null) return false;
+    return Boolean(
+      process.env.LINKEDIN_PAGES_ENABLED?.trim() &&
+        process.env.LINKEDIN_PAGES_CLIENT_ID?.trim() &&
+        process.env.LINKEDIN_PAGES_CLIENT_SECRET?.trim(),
+    );
+  },
+});
+
+const appValidator = v.optional(v.literal("linkedinPages"));
+
 export const saveAttempt = internalMutation({
   args: {
     owner: v.string(),
@@ -39,6 +58,7 @@ export const saveAttempt = internalMutation({
     providerState: v.optional(v.string()),
     redirectUri: v.string(),
     client: v.optional(v.literal("desktop")),
+    app: appValidator,
   },
   handler: async (ctx, args) => {
     await ctx.db.insert("connectAttempts", { ...args, createdAt: Date.now() });
@@ -70,6 +90,7 @@ export const storeConnection = internalMutation({
     sealed: v.object({ keyId: v.string(), iv: v.string(), ciphertext: v.string() }),
     expiresAt: v.optional(v.number()),
     scopes: v.optional(v.array(v.string())),
+    app: appValidator,
   },
   handler: async (ctx, args) => {
     const existing = await ctx.db
@@ -97,6 +118,7 @@ export const storeConnection = internalMutation({
         status: "syncing",
         syncStartedAt: Date.now(),
         ...(args.scopes ? { scopes: args.scopes } : {}),
+        ...(args.app ? { app: args.app } : {}),
       });
     } else {
       await ctx.db.patch("accounts", accountId, { status: "syncing", syncStartedAt: Date.now(), lastError: undefined, displayName: args.displayName, ...(args.scopes ? { scopes: args.scopes } : {}) });

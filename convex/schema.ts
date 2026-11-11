@@ -33,6 +33,8 @@ export default defineSchema({
     limited: v.optional(v.array(v.string())),
     /** What the account allowed at sign-in. Missing on accounts connected before posting existed. */
     scopes: v.optional(v.array(v.string())),
+    /** Set on LinkedIn company Pages, whose tokens come from the separate Pages developer app. */
+    app: v.optional(v.literal("linkedinPages")),
   })
     .index("by_owner", ["owner"])
     .index("by_owner_and_platform", ["owner", "platform"]),
@@ -220,6 +222,8 @@ export default defineSchema({
     redirectUri: v.string(),
     /** Set when the desktop app started it, so the callback ends on a web page instead of the phone app. */
     client: v.optional(v.literal("desktop")),
+    /** Set when connecting LinkedIn company Pages instead of the member profile. */
+    app: v.optional(v.literal("linkedinPages")),
     createdAt: v.number(),
   }).index("by_state", ["state"]),
 

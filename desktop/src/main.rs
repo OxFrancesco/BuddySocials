@@ -158,6 +158,7 @@ impl App {
             QuerySpec::new("accounts:list", json!({})),
             QuerySpec::new("layouts:get", json!({})),
             QuerySpec::new("connectStore:availability", json!({})),
+            QuerySpec::new("connectStore:pagesAvailable", json!({})),
             QuerySpec::new("comments:openSummary", json!({})),
             QuerySpec::new("goals:list", json!({ "today": today })),
             QuerySpec::new("dashboard:posts", self.posts_args()),

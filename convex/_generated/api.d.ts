@@ -30,6 +30,7 @@ import type * as social_batch from "../social/batch.js";
 import type * as social_client from "../social/client.js";
 import type * as social_demo from "../social/demo.js";
 import type * as social_extract from "../social/extract.js";
+import type * as social_linkedinPages from "../social/linkedinPages.js";
 import type * as social_oauth from "../social/oauth.js";
 import type * as sync from "../sync.js";
 import type * as validators from "../validators.js";
@@ -63,6 +64,7 @@ declare const fullApi: ApiFromModules<{
   "social/client": typeof social_client;
   "social/demo": typeof social_demo;
   "social/extract": typeof social_extract;
+  "social/linkedinPages": typeof social_linkedinPages;
   "social/oauth": typeof social_oauth;
   sync: typeof sync;
   validators: typeof validators;

@@ -14,6 +14,14 @@ import { internalAction, type ActionCtx } from "./_generated/server";
 import { metricsFor, postsWithMetrics } from "./social/batch";
 import { adapterFor, openCredential, sealCredential, socialFor, supports } from "./social/client";
 import { refreshIfNeeded } from "./social/oauth";
+import { refreshPagesToken } from "./social/linkedinPages";
+import type { PlatformCredential } from "./social/client";
+
+/** Page tokens come from the LinkedIn Pages app, so they refresh with its keys. */
+async function refreshPagesIfNeeded(credential: PlatformCredential): Promise<PlatformCredential | null> {
+  if (credential.expiresAt === undefined || credential.expiresAt - Date.now() > 5 * 60_000) return null;
+  return await refreshPagesToken(credential);
+}
 import type { DemoNative } from "./social/demo";
 import { countersFrom, extractComment, extractPost, followersFrom, type ExtractedPost } from "./social/extract";
 import { addDays, dayKey } from "../shared/format";
@@ -83,7 +91,10 @@ export async function load(ctx: ActionCtx, accountId: Id<"accounts">) {
   let credential = loaded.sealed === null ? null : openCredential(loaded.sealed);
   if (credential === null && loaded.account.source === "direct") throw new ReconnectError();
   if (credential !== null) {
-    const refreshed = await refreshIfNeeded(loaded.account.platform, credential);
+    const refreshed =
+      loaded.account.app === "linkedinPages"
+        ? await refreshPagesIfNeeded(credential)
+        : await refreshIfNeeded(loaded.account.platform, credential);
     if (refreshed !== null) {
       credential = refreshed;
       await ctx.runMutation(internal.connectStore.replaceCredential, {

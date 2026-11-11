@@ -52,6 +52,8 @@ export const list = query({
       lastSyncedAt: account.lastSyncedAt ?? null,
       lastError: account.lastError ?? null,
       limited: account.limited ?? null,
+      /** "page" for LinkedIn company Pages, so a reconnect goes through the Pages sign-in. */
+      kind: account.app === "linkedinPages" ? ("page" as const) : ("profile" as const),
     }));
   },
 });

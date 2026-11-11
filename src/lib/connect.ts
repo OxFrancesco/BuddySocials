@@ -58,12 +58,14 @@ export function useConnect() {
   const [busy, setBusy] = useState<Platform | null>(null);
 
   /** Resolves false only when the person backed out of the sign-in. */
-  async function connect(platform: Platform, intent: "add" | "reconnect"): Promise<boolean> {
+  async function connect(platform: Platform, intent: "add" | "reconnect", options: { pages?: boolean } = {}): Promise<boolean> {
     setBusy(platform);
     setNotice(null);
     const direct = (accounts ?? []).filter((account) => account.platform === platform && account.source === "direct").length;
     try {
-      const url = await begin({ platform, another: direct > (intent === "reconnect" ? 1 : 0) });
+      const url = await begin(
+        options.pages ? { platform, pages: true } : { platform, another: direct > (intent === "reconnect" ? 1 : 0) },
+      );
       const result = await WebBrowser.openAuthSessionAsync(url, "buddysocials://accounts");
       if (result.type !== "success") return false;
       setNotice(noticeFor(Linking.parse(result.url).queryParams ?? {}, intent));

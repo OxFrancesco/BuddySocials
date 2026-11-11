@@ -5,7 +5,8 @@ import type { OAuthTokenSet } from "@opencoredev/social-sdk/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
-import { action, internalAction } from "./_generated/server";
+import { action, internalAction, type ActionCtx } from "./_generated/server";
+import { administeredPages, authorizationUrl as pagesAuthorizationUrl, exchangeCode } from "./social/linkedinPages";
 import { requireOwner } from "./lib/owner";
 import { openCredential, sealCredential } from "./social/client";
 import { providerFor, toCredential } from "./social/oauth";
@@ -49,12 +50,32 @@ function askForAccount(platform: Platform, authorizationUrl: string): string {
 
 /** Starts the platform's OAuth consent flow and returns the URL the phone opens. */
 export const begin = action({
-  args: { platform: platformValidator, another: v.optional(v.boolean()), client: v.optional(v.literal("desktop")) },
+  args: {
+    platform: platformValidator,
+    another: v.optional(v.boolean()),
+    client: v.optional(v.literal("desktop")),
+    /** LinkedIn only: connect the company Pages you administer instead of your profile. */
+    pages: v.optional(v.boolean()),
+  },
   handler: async (ctx, args): Promise<string> => {
     const owner = await requireOwner(ctx);
     const redirectUri = callbackUri();
     const state = base64url(randomBytes(24));
     const codeVerifier = base64url(randomBytes(48));
+    if (args.pages) {
+      if (args.platform !== "linkedin") throw new Error("Only LinkedIn has company Pages.");
+      const url = pagesAuthorizationUrl(state, redirectUri);
+      await ctx.runMutation(internal.connectStore.saveAttempt, {
+        owner,
+        platform: "linkedin",
+        state,
+        codeVerifier,
+        redirectUri,
+        app: "linkedinPages",
+        ...(args.client ? { client: args.client } : {}),
+      });
+      return url;
+    }
     const codeChallenge = base64url(createHash("sha256").update(codeVerifier).digest());
     const provider = providerFor(args.platform, redirectUri, () => {});
     const started = await provider.start({
@@ -77,6 +98,41 @@ export const begin = action({
   },
 });
 
+/** Stores one account per LinkedIn Page the member may post as, all sharing the member's token. */
+async function completePages(
+  ctx: ActionCtx,
+  attempt: Doc<"connectAttempts">,
+  callbackUrl: string,
+  desktop: boolean,
+): Promise<{ platform: string; handle: string; existing: boolean; desktop: boolean } | { error: string; desktop: boolean }> {
+  try {
+    const credential = await exchangeCode(callbackUrl, attempt.redirectUri);
+    const pages = await administeredPages(credential.accessToken);
+    if (pages.length === 0) {
+      return { error: "This LinkedIn account isn't an admin of any Page. Ask a Page admin to give you the Admin or Content admin role.", desktop };
+    }
+    let existing = true;
+    for (const page of pages) {
+      const stored = await ctx.runMutation(internal.connectStore.storeConnection, {
+        owner: attempt.owner,
+        platform: "linkedin",
+        platformAccountId: page.urn,
+        displayName: page.name,
+        handle: page.handle,
+        sealed: sealCredential(credential),
+        app: "linkedinPages",
+        ...(credential.expiresAt ? { expiresAt: credential.expiresAt } : {}),
+        ...(credential.scopes ? { scopes: credential.scopes } : {}),
+      });
+      existing &&= stored.existing;
+    }
+    return { platform: "linkedin", handle: pages.map((page) => page.name).join(", "), existing, desktop };
+  } catch (error) {
+    console.error("LinkedIn Pages sign-in failed", error);
+    return { error: "LinkedIn did not accept the sign-in. Try again.", desktop };
+  }
+}
+
 /** Runs from the HTTP callback: exchanges the code, seals the token, creates the account. */
 export const complete = internalAction({
   args: { state: v.string(), callbackUrl: v.string() },
@@ -86,6 +142,7 @@ export const complete = internalAction({
     const attempt = await ctx.runMutation(internal.connectStore.takeAttempt, { state: args.state });
     if (attempt === null) return { error: "That sign-in link expired. Try connecting again.", desktop: false };
     const desktop = attempt.client === "desktop";
+    if (attempt.app === "linkedinPages") return await completePages(ctx, attempt, args.callbackUrl, desktop);
     const tokens: { accountId: string; displayName: string; token: OAuthTokenSet }[] = [];
     try {
       const provider = providerFor(attempt.platform, attempt.redirectUri, (accountId, displayName, token) => {

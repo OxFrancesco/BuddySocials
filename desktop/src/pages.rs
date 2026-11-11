@@ -470,6 +470,7 @@ fn account_status(account: &Json, syncing: bool) -> (String, bool) {
 pub fn accounts(s: &App) -> El {
     let accounts = s.accounts();
     let available = s.query("connectStore:availability", json!({}));
+    let pages_available = s.query("connectStore:pagesAvailable", json!({})).is_some_and(|v| v == true);
     let mut list = col().px(24.0).pt(20.0).pb(32.0).gap(18.0);
     for platform in theme::PLATFORMS {
         let own: Vec<&Json> = accounts.iter().filter(|account| account["platform"] == platform).collect();
@@ -481,7 +482,13 @@ pub fn accounts(s: &App) -> El {
             let another = has_direct;
             head = head.child(
                 ui::button(format!("connect-{platform}"), if has_direct { "Add another" } else { "Connect" }, if has_direct { ui::Kind::Outline } else { ui::Kind::Primary })
-                    .on_press(move |s: &mut App| s.send(Cmd::Connect { platform: platform.to_string(), another })),
+                    .on_press(move |s: &mut App| s.send(Cmd::Connect { platform: platform.to_string(), another, pages: false })),
+            );
+        }
+        if platform == "linkedin" && pages_available {
+            head = head.child(
+                ui::button("connect-linkedin-pages", "Add a Page", ui::Kind::Outline)
+                    .on_press(|s: &mut App| s.send(Cmd::Connect { platform: "linkedin".into(), another: false, pages: true })),
             );
         }
         section = section.child(head);
@@ -510,10 +517,11 @@ pub fn accounts(s: &App) -> El {
             }
             let mut actions = row().gap(8.0);
             if account["source"] == "direct" {
-                if account["status"] == "reconnect" && can_connect {
+                let page = account["kind"] == "page";
+                if account["status"] == "reconnect" && (if page { pages_available } else { can_connect }) {
                     actions = actions.child(
                         ui::button(format!("reconnect-{id}"), "Sign in again", ui::Kind::Primary)
-                            .on_press(move |s: &mut App| s.send(Cmd::Connect { platform: platform.to_string(), another: false })),
+                            .on_press(move |s: &mut App| s.send(Cmd::Connect { platform: platform.to_string(), another: false, pages: page })),
                     );
                 } else {
                     let sync_id = id.clone();

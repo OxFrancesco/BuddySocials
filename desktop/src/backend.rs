@@ -52,7 +52,8 @@ pub enum Cmd {
     /// Saves the draft, then publishes it. One command, because a new draft has no ID until it is saved.
     PublishDraft { draft: Json },
     /// Starts connecting a platform account; the browser does the rest.
-    Connect { platform: String, another: bool },
+    /// `pages` connects the LinkedIn company Pages the user administers instead of their profile.
+    Connect { platform: String, another: bool, pages: bool },
     /// Sends a file to storage and registers it, so a draft can hold it.
     Upload { key: u64, path: PathBuf, mime: String, name: String },
     /// Fetches a saved attachment to a local file.
@@ -249,11 +250,11 @@ async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, out: Out) {
                             out.push(Event::Downloaded { key, result });
                         });
                     }
-                    Cmd::Connect { platform, another } => {
+                    Cmd::Connect { platform, another, pages } => {
                         let mut client = client.clone();
                         let out = out.clone();
                         tokio::spawn(async move {
-                            let args = serde_json::json!({ "platform": platform, "another": another, "client": "desktop" });
+                            let args = serde_json::json!({ "platform": platform, "another": another, "client": "desktop", "pages": pages });
                             match client.action("connect:begin", args_of(&args.to_string())).await {
                                 Ok(FunctionResult::Value(Value::String(url))) => out.push(Event::OpenUrl(url)),
                                 Ok(result) => out.push(Event::Notice(failure(&result).unwrap_or_else(|| "Could not start sign-in.".into()))),

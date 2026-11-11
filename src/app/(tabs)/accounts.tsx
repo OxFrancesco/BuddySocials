@@ -33,6 +33,7 @@ export default function Accounts() {
   const params = useLocalSearchParams<{ connected?: string; handle?: string; existing?: string; error?: string }>();
   const accounts = useQuery(api.accounts.list, {});
   const available = useQuery(api.connectStore.availability, {});
+  const pagesAvailable = useQuery(api.connectStore.pagesAvailable, {}) === true;
   const syncNow = useMutation(api.accounts.syncNow);
   const disconnect = useMutation(api.connectStore.disconnect);
   const loadDemo = useMutation(api.accounts.loadDemo);
@@ -100,13 +101,13 @@ export default function Accounts() {
                   </View>
                   {demo ? null : (
                     <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-                      {account.status === "reconnect" && available?.[platform] ? (
+                      {account.status === "reconnect" && (account.kind === "page" ? pagesAvailable : available?.[platform]) ? (
                         <Button
                           testID={`reconnect-${platform}`}
                           size="sm"
                           label={busy === platform ? "Opening" : "Sign in again"}
                           disabled={busy !== null}
-                          onPress={() => void connect(platform, "reconnect")}
+                          onPress={() => void connect(platform, "reconnect", { pages: account.kind === "page" })}
                         />
                       ) : null}
                       <Button testID={`sync-${platform}`} size="sm" variant="outline" label="Sync" onPress={() => void syncNow({ accountId: account._id })} />
