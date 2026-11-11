@@ -47,6 +47,16 @@ impl Tab {
     }
 }
 
+/// The draft open in the editor.
+pub struct DraftEdit {
+    /// None while the draft has never been saved.
+    pub id: Option<String>,
+    pub text: TextEdit,
+    pub accounts: Vec<String>,
+    /// Publishing is public, so the button asks once more before it sends.
+    pub confirming: bool,
+}
+
 /// A chart's pixels and what they were drawn from, so it is only redrawn when that changes.
 pub struct Chart {
     pub signature: u64,
@@ -62,6 +72,9 @@ pub struct App {
     wanted: Vec<QuerySpec>,
     /// "all" or a platform.
     pub posts_filter: String,
+    /// The Posts tab shows what is published or what is still a draft.
+    pub show_drafts: bool,
+    pub draft: Option<DraftEdit>,
     pub inbox_open_only: bool,
     pub reply_to: Option<String>,
     pub reply: TextEdit,
@@ -129,6 +142,7 @@ impl App {
             QuerySpec::new("goals:list", json!({ "today": today })),
             QuerySpec::new("dashboard:posts", self.posts_args()),
             QuerySpec::new("comments:list", self.inbox_args()),
+            QuerySpec::new("drafts:list", json!({})),
         ];
         for widget in self.query("layouts:get", json!({})).and_then(Json::as_array).into_iter().flatten() {
             wanted.extend(home::queries_for(widget, &today, self.hour()));
@@ -152,6 +166,8 @@ fn init() -> App {
         data: HashMap::new(),
         wanted: Vec::new(),
         posts_filter: "all".into(),
+        show_drafts: false,
+        draft: None,
         inbox_open_only: true,
         reply_to: None,
         reply: TextEdit::new(""),
@@ -219,6 +235,10 @@ fn absorb(s: &mut App) -> (bool, Vec<String>) {
                     if let Some(path) = cache_path() {
                         let _ = std::fs::remove_file(path);
                     }
+                }
+                if matches!(auth, AuthState::SignedIn { .. }) && !matches!(s.auth, AuthState::SignedIn { .. }) {
+                    // Lets other ways in (the MCP server) find this person by email.
+                    s.mutate("profiles:ensure", json!({}));
                 }
                 s.auth = auth;
             }
@@ -412,6 +432,16 @@ fn main() {
         families: ("IBM Plex Mono", "IBM Plex Mono"),
         scenes: &[
             ("posts", |s| s.tab = Tab::Posts),
+            ("drafts", |s| {
+                s.tab = Tab::Posts;
+                s.show_drafts = true;
+            }),
+            ("draft-editor", |s| {
+                s.tab = Tab::Posts;
+                s.show_drafts = true;
+                let accounts = s.accounts().iter().filter(|a| a["platform"] == "linkedin" || a["platform"] == "x").filter_map(|a| a["_id"].as_str().map(str::to_string)).collect();
+                s.draft = Some(DraftEdit { id: None, text: TextEdit::new("Shipping the desktop app this week. Same dashboard, bigger screen."), accounts, confirming: false });
+            }),
             ("inbox", |s| s.tab = Tab::Inbox),
             ("goals", |s| s.tab = Tab::Goals),
             ("accounts", |s| s.tab = Tab::Accounts),

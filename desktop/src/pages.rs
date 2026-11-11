@@ -1,10 +1,10 @@
 //! Posts, Inbox, Goals and Accounts.
 
-use rune::{El, col, el, row, text, text_input};
+use rune::{El, TextEdit, col, el, row, text, text_input};
 use serde_json::{Value as Json, json};
 
 use crate::backend::{AuthState, Cmd};
-use crate::{App, fmt, home, theme, ui};
+use crate::{App, DraftEdit, fmt, home, theme, ui};
 
 fn open(url: String) -> impl Fn(&mut App, &mut rune::Tx) {
     move |s, tx| {
@@ -25,8 +25,196 @@ fn platform_chips(prefix: &str, current: &str, set: fn(&mut App, String)) -> El 
     chips
 }
 
+/// The longest post each platform takes, to show a count while writing. The server decides what can be sent.
+fn text_limit(platform: &str) -> Option<usize> {
+    match platform {
+        "x" => Some(280),
+        "linkedin" => Some(3000),
+        _ => None,
+    }
+}
+
+fn view_switch(s: &App) -> El {
+    row()
+        .gap(8.0)
+        .child(ui::chip("posts-published", "Published", !s.show_drafts).on_press(|s: &mut App| s.show_drafts = false))
+        .child(ui::chip("posts-drafts", "Drafts", s.show_drafts).on_press(|s: &mut App| s.show_drafts = true))
+}
+
+fn draft_json(edit: &DraftEdit) -> Json {
+    let mut draft = json!({ "text": edit.text.text.clone(), "accountIds": edit.accounts });
+    if let Some(id) = &edit.id {
+        draft["draftId"] = json!(id);
+    }
+    draft
+}
+
+fn draft_editor(s: &App, edit: &DraftEdit) -> El {
+    let length = edit.text.text.trim().chars().count();
+    let saved = edit.id.as_ref().and_then(|id| {
+        s.query("drafts:list", json!({})).and_then(Json::as_array).and_then(|drafts| drafts.iter().find(|draft| draft["_id"] == id.as_str()))
+    });
+    let mut accounts = row().gap(8.0).flex_wrap();
+    let mut counts: Vec<(String, bool)> = Vec::new();
+    for account in s.accounts() {
+        let id = account["_id"].as_str().unwrap_or("").to_string();
+        let platform = account["platform"].as_str().unwrap_or("");
+        let chosen = edit.accounts.contains(&id);
+        if chosen {
+            if let Some(limit) = text_limit(platform) {
+                counts.push((format!("{} {length} / {limit}", theme::platform_label(platform)), length > limit));
+            }
+        }
+        let label = format!("{} · {}", theme::platform_label(platform), account["handle"].as_str().unwrap_or(""));
+        let toggle = id.clone();
+        accounts = accounts.child(ui::chip(format!("draft-account-{id}"), &label, chosen).on_press(move |s: &mut App| {
+            let Some(edit) = &mut s.draft else { return };
+            if let Some(at) = edit.accounts.iter().position(|entry| *entry == toggle) {
+                edit.accounts.remove(at);
+            } else {
+                edit.accounts.push(toggle.clone());
+            }
+            edit.confirming = false;
+        }));
+    }
+    let mut editor = col()
+        .key("draft-editor")
+        .mx(24.0)
+        .mb(24.0)
+        .padding(16.0)
+        .gap(14.0)
+        .border(2.0, theme::FG)
+        .child(
+            col().min_h(120.0).child(
+                text_input(&edit.text, theme::mono(15.0))
+                    .key("draft-text")
+                    .w_full()
+                    .color(theme::FG)
+                    .caret(theme::coral(), theme::coral().alpha(0.4))
+                    .placeholder("What do you want to post?", theme::FAINT)
+                    .on_edit(|s: &mut App| &mut s.draft.as_mut().expect("the editor is open").text),
+            ),
+        )
+        .child(accounts);
+    if !counts.is_empty() {
+        let mut line = row().gap(16.0);
+        for (label, over) in counts {
+            line = line.child(text(label.to_uppercase()).font(theme::label(10.0)).color(if over { theme::coral() } else { theme::DIM }));
+        }
+        editor = editor.child(line);
+    }
+    // What the server said about the saved draft: why a target can't post, or how each post went.
+    for target in saved.and_then(|draft| draft["targets"].as_array()).into_iter().flatten() {
+        let who = format!("{} · {}", theme::platform_label(target["platform"].as_str().unwrap_or("")), target["handle"].as_str().unwrap_or(""));
+        let (note, alert) = match target["state"].as_str() {
+            Some("published") => ("Published".to_string(), false),
+            Some("queued") | Some("sending") => ("Publishing".to_string(), false),
+            Some("failed") => (target["error"].as_str().unwrap_or("Not sent").to_string(), true),
+            _ => match target["issues"].as_array().and_then(|issues| issues.first()).and_then(Json::as_str) {
+                Some(issue) => (issue.to_string(), true),
+                None => continue,
+            },
+        };
+        let mut line = row().gap(12.0).center_y().child(text(format!("{who}: {note}")).font(theme::mono(13.0)).color(if alert { theme::coral() } else { theme::FG }).wrap().grow(1.0));
+        if let Some(url) = target["permalink"].as_str() {
+            line = line.child(ui::button(format!("open-{}", target["accountId"].as_str().unwrap_or("")), "Open", ui::Kind::Ghost).on_press_tx(open(url.to_string())));
+        }
+        editor = editor.child(line);
+    }
+    let can_send = !edit.accounts.is_empty() && (length > 0);
+    let mut actions = row().gap(8.0).center_y();
+    actions = actions.child(ui::button("draft-save", "Save", ui::Kind::Outline).on_press(|s: &mut App| {
+        let Some(edit) = s.draft.take() else { return };
+        s.mutate("drafts:save", draft_json(&edit));
+    }));
+    if can_send {
+        actions = actions.child(
+            ui::button("draft-publish", if edit.confirming { "Post it now" } else { "Publish" }, ui::Kind::Primary).on_press(|s: &mut App| {
+                let Some(edit) = &mut s.draft else { return };
+                if !edit.confirming {
+                    edit.confirming = true;
+                    return;
+                }
+                let draft = draft_json(edit);
+                s.draft = None;
+                s.send(Cmd::PublishDraft { draft });
+            }),
+        );
+    }
+    actions = actions.child(ui::button("draft-close", "Close", ui::Kind::Ghost).on_press(|s: &mut App| s.draft = None));
+    if let Some(id) = edit.id.clone() {
+        actions = actions.child(col().grow(1.0)).child(ui::button("draft-delete", "Delete", ui::Kind::Ghost).on_press(move |s: &mut App| {
+            s.mutate("drafts:remove", json!({ "draftId": id }));
+            s.draft = None;
+        }));
+    }
+    editor.child(actions)
+}
+
+fn drafts(s: &App) -> El {
+    let bar = row().gap(8.0).center_y().child(view_switch(s)).child(col().grow(1.0)).child(ui::button("new-draft", "New draft", ui::Kind::Primary).on_press(|s: &mut App| {
+        let mut text = TextEdit::new("");
+        text.focused = true;
+        s.draft = Some(DraftEdit { id: None, text, accounts: Vec::new(), confirming: false });
+    }));
+    let mut content = col().pb(32.0);
+    if let Some(edit) = &s.draft {
+        content = content.child(draft_editor(s, edit));
+    }
+    let Some(drafts) = s.query("drafts:list", json!({})).and_then(Json::as_array) else { return ui::page("drafts", Some(bar), content) };
+    let mut list = col().px(24.0);
+    if drafts.is_empty() && s.draft.is_none() {
+        list = list.child(ui::empty("No drafts yet."));
+    }
+    for draft in drafts {
+        let id = draft["_id"].as_str().unwrap_or("").to_string();
+        if s.draft.as_ref().and_then(|edit| edit.id.as_deref()) == Some(id.as_str()) {
+            continue;
+        }
+        let body = draft["text"].as_str().unwrap_or("");
+        let title = body.lines().find(|line| !line.trim().is_empty()).unwrap_or("Empty draft").to_string();
+        let (status, alert) = match draft["status"].as_str().unwrap_or("") {
+            "publishing" => ("Publishing", false),
+            "published" => ("Published", false),
+            "partial" => ("Partly published", true),
+            "failed" => ("Failed", true),
+            _ => ("", false),
+        };
+        let mut marks = row().gap(6.0).center_y();
+        for target in draft["targets"].as_array().into_iter().flatten() {
+            marks = marks.child(el().size(10.0, 10.0).fill(theme::platform_color(target["platform"].as_str().unwrap_or(""))));
+        }
+        let accounts: Vec<String> = draft["targets"].as_array().into_iter().flatten().filter_map(|target| target["accountId"].as_str().map(str::to_string)).collect();
+        let (open_id, open_text) = (id.clone(), body.to_string());
+        let mut line = row()
+            .key(format!("draft-{id}"))
+            .py(14.0)
+            .gap(16.0)
+            .center_y()
+            .border_sides([0.0, 0.0, 1.0, 0.0], theme::line())
+            .cursor(rune::Cursor::Pointer)
+            .hover(theme::FG.alpha(0.06))
+            .on_press(move |s: &mut App| {
+                let mut text = TextEdit::new(open_text.clone());
+                text.focused = true;
+                s.draft = Some(DraftEdit { id: Some(open_id.clone()), text, accounts: accounts.clone(), confirming: false });
+            })
+            .child(marks)
+            .child(text(title).font(theme::mono(14.0)).color(theme::FG).truncate().grow(1.0).min_w(0.0));
+        if !status.is_empty() {
+            line = line.child(text(status.to_uppercase()).font(theme::label(10.0)).color(if alert { theme::coral() } else { theme::DIM }));
+        }
+        line = line.child(text(fmt::relative_time(draft["updatedAt"].as_f64().unwrap_or(0.0), s.now).to_uppercase()).font(theme::label(10.0)).color(theme::FAINT));
+        list = list.child(line);
+    }
+    ui::page("drafts", Some(bar), content.child(list))
+}
+
 pub fn posts(s: &App) -> El {
-    let bar = platform_chips("posts-filter", &s.posts_filter, |s, value| s.posts_filter = value);
+    if s.show_drafts {
+        return drafts(s);
+    }
+    let bar = row().gap(24.0).flex_wrap().child(view_switch(s)).child(platform_chips("posts-filter", &s.posts_filter, |s, value| s.posts_filter = value));
     let Some(page) = s.query("dashboard:posts", s.posts_args()) else { return ui::page("posts", Some(bar), el()) };
     let posts = page["page"].as_array().map(Vec::as_slice).unwrap_or(&[]);
     let mut list = col().px(24.0).pb(32.0);

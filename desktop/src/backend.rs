@@ -48,6 +48,8 @@ pub enum Cmd {
     /// The full set of queries the window wants live. Anything else is dropped.
     Subscribe(Vec<QuerySpec>),
     Mutation { name: &'static str, args: Json },
+    /// Saves the draft, then publishes it. One command, because a new draft has no ID until it is saved.
+    PublishDraft { draft: Json },
     /// Starts connecting a platform account; the browser does the rest.
     Connect { platform: String, another: bool },
 }
@@ -202,6 +204,23 @@ async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, out: Out) {
                         let out = out.clone();
                         tokio::spawn(async move {
                             match client.mutation(name, args_of(&args.to_string())).await {
+                                Ok(result) => if let Some(message) = failure(&result) { out.push(Event::Notice(message)) },
+                                Err(_) => out.push(Event::Notice("That didn't go through. Try again.".into())),
+                            }
+                        });
+                    }
+                    Cmd::PublishDraft { draft } => {
+                        let mut client = client.clone();
+                        let out = out.clone();
+                        tokio::spawn(async move {
+                            let saved = client.mutation("drafts:save", args_of(&draft.to_string())).await;
+                            let draft_id = match saved {
+                                Ok(FunctionResult::Value(Value::String(id))) => id,
+                                Ok(result) => return out.push(Event::Notice(failure(&result).unwrap_or_else(|| "The draft could not be saved.".into()))),
+                                Err(_) => return out.push(Event::Notice("The draft could not be saved.".into())),
+                            };
+                            let args = serde_json::json!({ "draftId": draft_id });
+                            match client.mutation("drafts:publish", args_of(&args.to_string())).await {
                                 Ok(result) => if let Some(message) = failure(&result) { out.push(Event::Notice(message)) },
                                 Err(_) => out.push(Event::Notice("That didn't go through. Try again.".into())),
                             }
