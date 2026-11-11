@@ -1,6 +1,7 @@
 import { httpRouter } from "convex/server";
 import { internal } from "./_generated/api";
 import { httpAction } from "./_generated/server";
+import * as mcp from "./mcp";
 
 const http = httpRouter();
 
@@ -49,5 +50,12 @@ http.route({
     return back({ connected: result.platform, handle: result.handle, ...(result.existing ? { existing: "1" } : {}) });
   }),
 });
+
+/** The MCP server: one stateless endpoint, signed in through WorkOS AuthKit. */
+http.route({ path: "/mcp", method: "POST", handler: mcp.post });
+http.route({ path: "/mcp", method: "GET", handler: mcp.noStream });
+http.route({ path: "/mcp", method: "OPTIONS", handler: mcp.preflight });
+http.route({ path: "/.well-known/oauth-protected-resource", method: "GET", handler: mcp.protectedResource });
+http.route({ path: "/.well-known/oauth-protected-resource/mcp", method: "GET", handler: mcp.protectedResource });
 
 export default http;

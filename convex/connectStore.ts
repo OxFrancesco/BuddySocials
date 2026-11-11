@@ -69,6 +69,7 @@ export const storeConnection = internalMutation({
     handle: v.string(),
     sealed: v.object({ keyId: v.string(), iv: v.string(), ciphertext: v.string() }),
     expiresAt: v.optional(v.number()),
+    scopes: v.optional(v.array(v.string())),
   },
   handler: async (ctx, args) => {
     const existing = await ctx.db
@@ -95,9 +96,10 @@ export const storeConnection = internalMutation({
         displayName: args.displayName,
         status: "syncing",
         syncStartedAt: Date.now(),
+        ...(args.scopes ? { scopes: args.scopes } : {}),
       });
     } else {
-      await ctx.db.patch("accounts", accountId, { status: "syncing", syncStartedAt: Date.now(), lastError: undefined, displayName: args.displayName });
+      await ctx.db.patch("accounts", accountId, { status: "syncing", syncStartedAt: Date.now(), lastError: undefined, displayName: args.displayName, ...(args.scopes ? { scopes: args.scopes } : {}) });
     }
     const credential = await ctx.db
       .query("credentials")

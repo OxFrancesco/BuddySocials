@@ -24,7 +24,10 @@ const ENV: Record<Platform, { id: string; secret: string; scopes?: string }> = {
   linkedin: { id: "LINKEDIN_CLIENT_ID", secret: "LINKEDIN_CLIENT_SECRET", scopes: "LINKEDIN_SCOPES" },
 };
 
-/** Scopes for stats and comments. LinkedIn's comment and analytics scopes need Community Management approval. */
+/**
+ * Scopes for stats, comments and posting. LinkedIn's comment and analytics scopes need
+ * Community Management approval. `media.write` lets X posts carry images.
+ */
 const SCOPES: Record<Platform, readonly string[]> = {
   youtube: [
     "openid",
@@ -39,7 +42,7 @@ const SCOPES: Record<Platform, readonly string[]> = {
     "instagram_business_manage_comments",
   ],
   tiktok: ["user.info.basic", "user.info.stats", "video.list"],
-  x: ["tweet.read", "tweet.write", "users.read", "offline.access"],
+  x: ["tweet.read", "tweet.write", "users.read", "media.write", "offline.access"],
   linkedin: ["openid", "profile", "w_member_social"],
 };
 

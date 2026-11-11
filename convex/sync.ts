@@ -57,7 +57,7 @@ function chunks<T>(items: readonly T[], size: number): T[][] {
 /** The stored sign-in is missing or can't be read, so only signing in again helps. */
 class ReconnectError extends Error {}
 
-function errorMessage(error: unknown): { message: string; reconnect: boolean } {
+export function errorMessage(error: unknown): { message: string; reconnect: boolean } {
   if (error instanceof ReconnectError) return { message: "Sign in to this account again.", reconnect: true };
   if (error instanceof SocialError) {
     const reconnect = error.code === "reconnect_required" || error.code === "unauthorized";
@@ -76,7 +76,7 @@ function errorMessage(error: unknown): { message: string; reconnect: boolean } {
   return { message: error instanceof Error ? error.message : "Sync failed.", reconnect: false };
 }
 
-async function load(ctx: ActionCtx, accountId: Id<"accounts">) {
+export async function load(ctx: ActionCtx, accountId: Id<"accounts">) {
   const loaded: { account: Doc<"accounts">; sealed: { iv: string; ciphertext: string } | null } | null =
     await ctx.runQuery(internal.accounts.getInternal, { accountId });
   if (loaded === null) return null;

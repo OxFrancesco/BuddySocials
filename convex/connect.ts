@@ -124,6 +124,7 @@ export const complete = internalAction({
           handle: entry.displayName,
           sealed: sealCredential(credential),
           ...(credential.expiresAt ? { expiresAt: credential.expiresAt } : {}),
+          ...(credential.scopes ? { scopes: credential.scopes } : {}),
         });
         handle = entry.displayName;
         existing &&= stored.existing;

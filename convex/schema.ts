@@ -31,6 +31,8 @@ export default defineSchema({
     lastError: v.optional(v.string()),
     /** Parts of the account the platform doesn't share with this app, e.g. LinkedIn posts before approval. */
     limited: v.optional(v.array(v.string())),
+    /** What the account allowed at sign-in. Missing on accounts connected before posting existed. */
+    scopes: v.optional(v.array(v.string())),
   })
     .index("by_owner", ["owner"])
     .index("by_owner_and_platform", ["owner", "platform"]),
@@ -145,6 +147,46 @@ export default defineSchema({
     celebrated: v.optional(v.string()),
     createdAt: v.number(),
   }).index("by_owner", ["owner"]),
+
+  /** A post written once and published later to one or more connected accounts. */
+  drafts: defineTable({
+    owner: v.string(),
+    text: v.string(),
+    media: v.array(
+      v.object({
+        storageId: v.id("_storage"),
+        kind: v.union(v.literal("image"), v.literal("video")),
+        mimeType: v.string(),
+        byteSize: v.number(),
+        filename: v.optional(v.string()),
+      }),
+    ),
+    /** The accounts this draft goes to. */
+    accountIds: v.array(v.id("accounts")),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  }).index("by_owner_and_updatedAt", ["owner", "updatedAt"]),
+
+  /** One row per draft and account, so a failure on one platform never hides a success on another. */
+  draftDeliveries: defineTable({
+    owner: v.string(),
+    draftId: v.id("drafts"),
+    accountId: v.id("accounts"),
+    platform: platformValidator,
+    state: v.union(v.literal("queued"), v.literal("sending"), v.literal("published"), v.literal("failed")),
+    permalink: v.optional(v.string()),
+    platformPostId: v.optional(v.string()),
+    error: v.optional(v.string()),
+    updatedAt: v.number(),
+  }).index("by_draft", ["draftId"]),
+
+  /** Who signed in, by email, so the MCP server can find the same person the apps know. */
+  profiles: defineTable({
+    owner: v.string(),
+    email: v.string(),
+  })
+    .index("by_owner", ["owner"])
+    .index("by_email", ["email"]),
 
   /** In-flight OAuth connections, keyed by the state sent to the platform. Ten minutes to finish. */
   connectAttempts: defineTable({
