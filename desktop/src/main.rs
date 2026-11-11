@@ -1,0 +1,429 @@
+//! BuddySocials for the desktop: the same dashboard, posts, inbox, goals and
+//! accounts as the phone app, on the same live backend.
+
+mod auth;
+mod backend;
+mod config;
+mod dither;
+mod fmt;
+mod home;
+mod pages;
+mod theme;
+mod ui;
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::time::Duration;
+
+use rune::{AppSpec, Cx, El, Pixels, TextEdit, Tx, col, row, text};
+use serde_json::{Value as Json, json};
+
+use backend::{AuthState, Backend, Cmd, Event, QuerySpec};
+
+const HOUR_MS: f64 = 3_600_000.0;
+const DAY_MS: f64 = 86_400_000.0;
+const PAGE: u32 = 100;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Tab {
+    Home,
+    Posts,
+    Inbox,
+    Goals,
+    Accounts,
+}
+
+impl Tab {
+    const ALL: [Tab; 5] = [Tab::Home, Tab::Posts, Tab::Inbox, Tab::Goals, Tab::Accounts];
+
+    fn label(self) -> &'static str {
+        match self {
+            Tab::Home => "Home",
+            Tab::Posts => "Posts",
+            Tab::Inbox => "Inbox",
+            Tab::Goals => "Goals",
+            Tab::Accounts => "Accounts",
+        }
+    }
+}
+
+/// A chart's pixels and what they were drawn from, so it is only redrawn when that changes.
+pub struct Chart {
+    pub signature: u64,
+    pub pixels: Pixels,
+}
+
+pub struct App {
+    pub backend: Option<Backend>,
+    pub auth: AuthState,
+    pub tab: Tab,
+    /// Latest result of every live query, by `QuerySpec::key`.
+    pub data: HashMap<String, Json>,
+    wanted: Vec<QuerySpec>,
+    /// "all" or a platform.
+    pub posts_filter: String,
+    pub inbox_open_only: bool,
+    pub reply_to: Option<String>,
+    pub reply: TextEdit,
+    pub confirm_disconnect: Option<String>,
+    pub notice: Option<String>,
+    pub charts: RefCell<HashMap<String, Chart>>,
+    /// Wall clock in milliseconds, refreshed by `poll`.
+    pub now: f64,
+}
+
+impl App {
+    pub fn query(&self, name: &'static str, args: Json) -> Option<&Json> {
+        self.data.get(&QuerySpec::new(name, args).key())
+    }
+
+    pub fn today(&self) -> String {
+        fmt::day_key(self.now)
+    }
+
+    pub fn hour(&self) -> f64 {
+        (self.now / HOUR_MS).floor() * HOUR_MS
+    }
+
+    pub fn send(&self, cmd: Cmd) {
+        if let Some(backend) = &self.backend {
+            backend.send(cmd);
+        }
+    }
+
+    pub fn mutate(&self, name: &'static str, args: Json) {
+        self.send(Cmd::Mutation { name, args });
+    }
+
+    pub fn accounts(&self) -> &[Json] {
+        self.query("accounts:list", json!({})).and_then(Json::as_array).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    /// True while any account's sync is running. A claim past two minutes is treated as dead.
+    pub fn syncing(&self) -> bool {
+        self.accounts().iter().any(|account| {
+            account["status"] == "syncing" && account["syncStartedAt"].as_f64().is_some_and(|started| self.now - started < 120_000.0)
+        })
+    }
+
+    pub fn posts_args(&self) -> Json {
+        let mut args = json!({ "paginationOpts": { "numItems": PAGE, "cursor": null } });
+        if self.posts_filter != "all" {
+            args["platform"] = json!(self.posts_filter);
+        }
+        args
+    }
+
+    pub fn inbox_args(&self) -> Json {
+        json!({ "open": self.inbox_open_only, "paginationOpts": { "numItems": PAGE, "cursor": null } })
+    }
+
+    /// Every query the window shows. All of them stay live, so switching tabs never loads.
+    fn queries(&self) -> Vec<QuerySpec> {
+        let today = self.today();
+        let mut wanted = vec![
+            QuerySpec::new("accounts:list", json!({})),
+            QuerySpec::new("layouts:get", json!({})),
+            QuerySpec::new("connectStore:availability", json!({})),
+            QuerySpec::new("comments:openSummary", json!({})),
+            QuerySpec::new("goals:list", json!({ "today": today })),
+            QuerySpec::new("dashboard:posts", self.posts_args()),
+            QuerySpec::new("comments:list", self.inbox_args()),
+        ];
+        for widget in self.query("layouts:get", json!({})).and_then(Json::as_array).into_iter().flatten() {
+            wanted.extend(home::queries_for(widget, &today, self.hour()));
+        }
+        wanted.sort_by(|a, b| a.key().cmp(&b.key()));
+        wanted.dedup();
+        wanted
+    }
+}
+
+fn cache_path() -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    Some(std::path::PathBuf::from(home).join("Library/Caches/BuddySocials/dashboard.json"))
+}
+
+fn init() -> App {
+    let mut app = App {
+        backend: None,
+        auth: AuthState::Loading,
+        tab: Tab::Home,
+        data: HashMap::new(),
+        wanted: Vec::new(),
+        posts_filter: "all".into(),
+        inbox_open_only: true,
+        reply_to: None,
+        reply: TextEdit::new(""),
+        confirm_disconnect: None,
+        notice: None,
+        charts: RefCell::new(HashMap::new()),
+        now: fmt::now_ms(),
+    };
+    // A saved dashboard, for rendering without a network (headless snapshots, tests).
+    if let Some(path) = std::env::var_os("BUDDYSOCIALS_FIXTURE") {
+        if let Some(data) = std::fs::read(path).ok().and_then(|raw| serde_json::from_slice(&raw).ok()) {
+            app.data = data;
+            app.auth = AuthState::SignedIn { email: Some("you@example.com".into()) };
+        }
+        if let Some(now) = std::env::var("BUDDYSOCIALS_NOW").ok().and_then(|raw| raw.parse().ok()) {
+            app.now = now;
+        }
+    }
+    app
+}
+
+fn setup(s: &mut App, wake: rune::Waker) {
+    if std::env::var_os("BUDDYSOCIALS_FIXTURE").is_some() {
+        return;
+    }
+    // The last dashboard is on disk, so the window opens with numbers while the live ones load.
+    if auth::load().is_some() {
+        if let Some(data) = cache_path().and_then(|path| std::fs::read(path).ok()).and_then(|raw| serde_json::from_slice(&raw).ok()) {
+            s.data = data;
+        }
+    }
+    s.backend = Some(Backend::start(wake));
+}
+
+fn save_cache(data: &HashMap<String, Json>) {
+    let Some(path) = cache_path() else { return };
+    let Ok(raw) = serde_json::to_vec(data) else { return };
+    std::thread::spawn(move || {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(path, raw);
+    });
+}
+
+/// Folds what the backend sent into state and keeps its subscriptions in step.
+/// Returns whether anything visible changed and the links to open in the browser.
+fn absorb(s: &mut App) -> (bool, Vec<String>) {
+    let fixture = s.backend.is_none();
+    let mut changed = false;
+    let mut links = Vec::new();
+    let now = fmt::now_ms();
+    if !fixture && (now - s.now).abs() >= 30_000.0 {
+        s.now = now;
+        changed = true;
+    }
+    let mut new_data = false;
+    for event in s.backend.as_ref().map(Backend::drain).unwrap_or_default() {
+        changed = true;
+        match event {
+            Event::Auth(auth) => {
+                if auth == AuthState::SignedOut {
+                    s.data.clear();
+                    s.charts.borrow_mut().clear();
+                    if let Some(path) = cache_path() {
+                        let _ = std::fs::remove_file(path);
+                    }
+                }
+                s.auth = auth;
+            }
+            Event::OpenUrl(url) => links.push(url),
+            Event::Data { key, value } => {
+                s.data.insert(key, value);
+                new_data = true;
+            }
+            Event::Notice(message) => s.notice = Some(message),
+        }
+    }
+    if new_data && matches!(s.auth, AuthState::SignedIn { .. }) {
+        save_cache(&s.data);
+    }
+    if !fixture {
+        let wanted = if matches!(s.auth, AuthState::SignedIn { .. }) { s.queries() } else { Vec::new() };
+        if wanted != s.wanted {
+            // Results of queries no longer wanted would only go stale.
+            let keys: Vec<String> = wanted.iter().map(QuerySpec::key).collect();
+            s.data.retain(|key, _| keys.contains(key));
+            s.send(Cmd::Subscribe(wanted.clone()));
+            s.wanted = wanted;
+        }
+    }
+    (changed, links)
+}
+
+fn poll(s: &mut App, _clock: f64, tx: &mut Tx) -> bool {
+    let (changed, links) = absorb(s);
+    for url in links {
+        if tx.open_url(&url).is_err() {
+            s.notice = Some("Could not open your browser.".into());
+        }
+    }
+    if s.backend.is_some() {
+        // Relative times ("updated 5m") and the day's queries follow the clock.
+        tx.wake_after(Duration::from_secs(30));
+    }
+    changed
+}
+
+/// `--fetch FILE`: without a window, signs in if needed (printing the link to open), loads
+/// every query the dashboard uses and writes them to FILE. End-to-end checks run this, then
+/// render the result with `BUDDYSOCIALS_FIXTURE=FILE`.
+fn fetch(path: &str) -> Result<(), String> {
+    let mut app = init();
+    app.backend = Some(Backend::start(std::sync::Arc::new(|| {})));
+    let started = std::time::Instant::now();
+    let mut asked = false;
+    let mut settled = 0;
+    while started.elapsed() < Duration::from_secs(330) {
+        std::thread::sleep(Duration::from_millis(250));
+        let (_, links) = absorb(&mut app);
+        for url in links {
+            println!("OPEN {url}");
+        }
+        if let Some(notice) = app.notice.take() {
+            eprintln!("NOTICE {notice}");
+        }
+        match app.auth {
+            AuthState::SignedOut if !asked => {
+                asked = true;
+                app.send(Cmd::SignIn);
+            }
+            AuthState::SignedIn { .. } => {
+                let complete = !app.wanted.is_empty() && app.wanted.iter().all(|spec| app.data.contains_key(&spec.key()));
+                settled = if complete { settled + 1 } else { 0 };
+                // The layout decides further queries, so wait until the set stops growing.
+                if settled >= 4 {
+                    let raw = serde_json::to_vec(&app.data).map_err(|e| e.to_string())?;
+                    std::fs::write(path, raw).map_err(|e| e.to_string())?;
+                    println!("FETCHED {} queries", app.data.len());
+                    return Ok(());
+                }
+            }
+            _ => {}
+        }
+    }
+    Err("timed out".into())
+}
+
+fn view(s: &App, cx: &mut Cx<App>) -> El {
+    match &s.auth {
+        AuthState::Loading => col().w_full().h_full().fill(theme::BG),
+        AuthState::SignedOut | AuthState::WaitingForBrowser => sign_in(s),
+        AuthState::SignedIn { .. } => shell(s, cx),
+    }
+}
+
+fn sign_in(s: &App) -> El {
+    let waiting = s.auth == AuthState::WaitingForBrowser;
+    let mut page = col().w_full().h_full().center().gap(20.0).fill(theme::BG);
+    page = page.child(text("BUDDYSOCIALS").font(theme::display(34.0)).color(theme::FG));
+    page = page.child(
+        ui::button("sign-in", if waiting { "Open the browser again" } else { "Sign in" }, ui::Kind::Primary)
+            .on_press(|s: &mut App| s.send(Cmd::SignIn)),
+    );
+    if waiting {
+        page = page.child(text("Finish signing in in your browser.").font(theme::mono(13.0)).color(theme::DIM));
+    }
+    if let Some(notice) = &s.notice {
+        page = page.child(text(notice.clone()).font(theme::mono(13.0)).color(theme::coral()));
+    }
+    page
+}
+
+fn shell(s: &App, cx: &mut Cx<App>) -> El {
+    let page = match s.tab {
+        Tab::Home => home::view(s, cx),
+        Tab::Posts => pages::posts(s),
+        Tab::Inbox => pages::inbox(s),
+        Tab::Goals => pages::goals(s),
+        Tab::Accounts => pages::accounts(s),
+    };
+    let mut main = col().key("main").grow(1.0).min_w(0.0).min_h(0.0).h_full();
+    if let Some(notice) = &s.notice {
+        main = main.child(
+            row()
+                .key("notice")
+                .px(24.0)
+                .py(12.0)
+                .gap(16.0)
+                .center_y()
+                .border_sides([0.0, 0.0, 2.0, 0.0], theme::coral())
+                .child(text(notice.clone()).font(theme::mono(13.0)).color(theme::coral()).wrap().grow(1.0))
+                .child(ui::button("dismiss-notice", "Dismiss", ui::Kind::Ghost).on_press(|s: &mut App| s.notice = None)),
+        );
+    }
+    main = main.child(page);
+    row().w_full().h_full().fill(theme::BG).child(sidebar(s)).child(rune::el().w(2.0).h_full().fill(theme::line())).child(main)
+}
+
+fn sidebar(s: &App) -> El {
+    let open = s.query("comments:openSummary", json!({})).and_then(|summary| summary["count"].as_f64()).unwrap_or(0.0);
+    let mut nav = col().key("nav").w(184.0).h_full();
+    for tab in Tab::ALL {
+        let active = s.tab == tab;
+        let ink = if active { theme::BG } else { theme::FG };
+        let mut item = row()
+            .key(format!("tab-{}", tab.label().to_lowercase()))
+            .role("tab")
+            .label(tab.label())
+            .h(48.0)
+            .px(20.0)
+            .gap(8.0)
+            .center_y()
+            .fill(if active { theme::coral() } else { theme::BG })
+            .cursor(rune::Cursor::Pointer)
+            .on_press(move |s: &mut App| s.tab = tab)
+            .child(text(tab.label().to_uppercase()).font(theme::label(12.0)).color(ink));
+        if tab == Tab::Inbox && open > 0.0 {
+            let count = if open >= 100.0 { "99+".to_string() } else { format!("{open}") };
+            item = item.child(text(count).font(theme::label(11.0)).color(if active { theme::BG } else { theme::coral() }));
+        }
+        nav = nav.child(item);
+    }
+    let last = s.accounts().iter().filter_map(|account| account["lastSyncedAt"].as_f64()).fold(0.0, f64::max);
+    let status = if s.syncing() {
+        "Syncing".to_string()
+    } else if last > 0.0 {
+        format!("Updated {}", fmt::relative_time(last, s.now))
+    } else {
+        String::new()
+    };
+    nav.child(col().grow(1.0)).child(
+        col()
+            .padding(20.0)
+            .gap(12.0)
+            .items_start()
+            .child(text(status.to_uppercase()).key("sync-status").font(theme::label(10.0)).color(theme::DIM))
+            .child(ui::button("refresh", "Refresh", ui::Kind::Outline).on_press(|s: &mut App| s.mutate("accounts:syncNow", json!({})))),
+    )
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(path) = args.iter().position(|arg| arg == "--fetch").and_then(|at| args.get(at + 1)) {
+        if let Err(error) = fetch(path) {
+            eprintln!("fetch failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    rune::run(AppSpec::<App> {
+        min_size: Some((860.0, 560.0)),
+        fonts: &[
+            include_bytes!("../../assets/fonts/IBMPlexMono-Regular.ttf"),
+            include_bytes!("../../assets/fonts/IBMPlexMono-Bold.ttf"),
+            include_bytes!("../../assets/fonts/ChakraPetch-Bold.ttf"),
+        ],
+        families: ("IBM Plex Mono", "IBM Plex Mono"),
+        scenes: &[
+            ("posts", |s| s.tab = Tab::Posts),
+            ("inbox", |s| s.tab = Tab::Inbox),
+            ("goals", |s| s.tab = Tab::Goals),
+            ("accounts", |s| s.tab = Tab::Accounts),
+            ("signed-out", |s| s.auth = AuthState::SignedOut),
+        ],
+        setup: Some(setup),
+        poll: Some(poll),
+        ..AppSpec::new("BuddySocials", (1180.0, 760.0), init, view)
+    });
+}
+
+/// Milliseconds in the last `days` days, for queries bounded by a range.
+pub fn days_ms(days: f64) -> f64 {
+    days * DAY_MS
+}

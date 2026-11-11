@@ -1,0 +1,3 @@
+# Cargo's built-in git client stalls on the Rune repository; the system git fetches it in seconds.
+[net]
+git-fetch-with-cli = true
