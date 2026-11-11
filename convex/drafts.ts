@@ -3,6 +3,7 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation, internalQuery, mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { optionalOwner, requireOwner } from "./lib/owner";
+import { discard, hold, release, uploadFor } from "./media";
 import { MAX_DRAFT_MEDIA, MAX_DRAFT_TEXT, postingIssues } from "../shared/drafts";
 
 const mediaValidator = v.object({
@@ -91,11 +92,40 @@ async function saveFor(
     if (account === null || account.owner !== owner) throw new Error("Account not found.");
   }
   const now = Date.now();
-  if (args.draftId === undefined) {
-    return await ctx.db.insert("drafts", { owner, text: args.text, media: args.media ?? [], accountIds, createdAt: now, updatedAt: now });
+  const draft = args.draftId === undefined ? null : await ctx.db.get("drafts", args.draftId);
+  if (args.draftId !== undefined && (draft === null || draft.owner !== owner)) throw new Error("Draft not found.");
+  // Each attachment must be a file this person uploaded, and its type and size are the server's own record.
+  let media: Doc<"drafts">["media"] | undefined;
+  const uploads: Doc<"uploads">[] = [];
+  if (args.media) {
+    media = [];
+    for (const item of args.media) {
+      const kept = draft?.media.find((existing) => existing.storageId === item.storageId);
+      const upload = await uploadFor(ctx, item.storageId);
+      if (upload === null) {
+        // Attached before uploads were tracked.
+        if (!kept) throw new Error("An attachment is missing. Add it again.");
+        media.push(kept);
+        continue;
+      }
+      if (upload.owner !== owner || (upload.draftId !== undefined && upload.draftId !== draft?._id)) {
+        throw new Error("An attachment is missing. Add it again.");
+      }
+      uploads.push(upload);
+      media.push({
+        storageId: upload.storageId,
+        kind: upload.kind,
+        mimeType: upload.mimeType,
+        byteSize: upload.byteSize,
+        ...(upload.filename ? { filename: upload.filename } : {}),
+      });
+    }
   }
-  const draft = await ctx.db.get("drafts", args.draftId);
-  if (draft === null || draft.owner !== owner) throw new Error("Draft not found.");
+  if (draft === null) {
+    const draftId = await ctx.db.insert("drafts", { owner, text: args.text, media: media ?? [], accountIds, createdAt: now, updatedAt: now });
+    for (const upload of uploads) await hold(ctx, upload, draftId);
+    return draftId;
+  }
   const deliveries = await ctx.db
     .query("draftDeliveries")
     .withIndex("by_draft", (q) => q.eq("draftId", draft._id))
@@ -108,9 +138,16 @@ async function saveFor(
   await ctx.db.patch("drafts", draft._id, {
     text: args.text,
     accountIds: [...new Set([...sent, ...accountIds])],
-    ...(args.media ? { media: args.media } : {}),
+    ...(media ? { media } : {}),
     updatedAt: now,
   });
+  if (media) {
+    for (const upload of uploads) if (upload.draftId === undefined) await hold(ctx, upload, draft._id);
+    // Anything taken off the draft waits for cleanup instead of staying in storage for good.
+    for (const item of draft.media) {
+      if (!media.some((next) => next.storageId === item.storageId)) await release(ctx, owner, item);
+    }
+  }
   return draft._id;
 }
 
@@ -122,7 +159,7 @@ async function removeFor(ctx: MutationCtx, owner: string, draftId: Id<"drafts">)
     .withIndex("by_draft", (q) => q.eq("draftId", draftId))
     .take(40);
   for (const delivery of deliveries) await ctx.db.delete("draftDeliveries", delivery._id);
-  for (const item of draft.media) await ctx.storage.delete(item.storageId);
+  for (const item of draft.media) await discard(ctx, item.storageId);
   await ctx.db.delete("drafts", draftId);
 }
 

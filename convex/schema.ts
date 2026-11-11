@@ -167,6 +167,28 @@ export default defineSchema({
     updatedAt: v.number(),
   }).index("by_owner_and_updatedAt", ["owner", "updatedAt"]),
 
+  /** Every file uploaded for a draft. `unusedSince` is set while no draft holds it; `expiresAt` is when cleanup deletes it. */
+  uploads: defineTable({
+    owner: v.string(),
+    storageId: v.id("_storage"),
+    kind: v.union(v.literal("image"), v.literal("video")),
+    mimeType: v.string(),
+    byteSize: v.number(),
+    filename: v.optional(v.string()),
+    draftId: v.optional(v.id("drafts")),
+    unusedSince: v.optional(v.number()),
+    expiresAt: v.optional(v.number()),
+  })
+    .index("by_storageId", ["storageId"])
+    .index("by_owner_and_unusedSince", ["owner", "unusedSince"])
+    .index("by_expiresAt", ["expiresAt"]),
+
+  /** Per-owner choices. `cleanupAfterDays` is null when unused uploads are only deleted by hand. */
+  settings: defineTable({
+    owner: v.string(),
+    cleanupAfterDays: v.union(v.null(), v.number()),
+  }).index("by_owner", ["owner"]),
+
   /** One row per draft and account, so a failure on one platform never hides a success on another. */
   draftDeliveries: defineTable({
     owner: v.string(),

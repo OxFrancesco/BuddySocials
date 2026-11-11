@@ -4,5 +4,6 @@ import { internal } from "./_generated/api";
 const crons = cronJobs();
 
 crons.interval("sync accounts", { minutes: 30 }, internal.accounts.syncDue, {});
+crons.interval("delete unused uploads", { hours: 1 }, internal.media.sweep, {});
 
 export default crons;

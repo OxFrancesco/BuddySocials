@@ -71,3 +71,10 @@ export function shortDay(day: string): string {
     timeZone: "UTC",
   });
 }
+
+/** A file size for people: "840 KB", "4.2 MB". */
+export function bytesLabel(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${trim(bytes / (1024 * 1024))} MB`;
+  return `${trim(bytes / (1024 * 1024 * 1024))} GB`;
+}
