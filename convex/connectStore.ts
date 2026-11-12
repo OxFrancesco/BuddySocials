@@ -73,10 +73,11 @@ export const storeConnection = internalMutation({
     const existing = await ctx.db
       .query("accounts")
       .withIndex("by_owner_and_platform", (q) => q.eq("owner", args.owner).eq("platform", args.platform))
-      .take(5);
-    let accountId = existing.find(
+      .take(20);
+    const match = existing.find(
       (account) => account.source === "direct" && account.platformAccountId === args.platformAccountId,
-    )?._id;
+    );
+    let accountId = match?._id;
     // A real account replaces the demo one for the same platform.
     for (const account of existing) {
       if (account.source !== "demo") continue;
@@ -104,7 +105,7 @@ export const storeConnection = internalMutation({
     if (credential === null) await ctx.db.insert("credentials", { accountId, ...fields });
     else await ctx.db.replace("credentials", credential._id, { accountId, ...fields });
     await ctx.scheduler.runAfter(0, internal.sync.syncAccount, { accountId, backfill: true });
-    return accountId;
+    return { accountId, existing: match !== undefined };
   },
 });
 

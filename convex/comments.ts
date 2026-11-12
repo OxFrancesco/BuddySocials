@@ -16,6 +16,7 @@ async function withPosts(ctx: QueryCtx, comments: Doc<"comments">[]) {
   return comments.map((comment) => ({
     _id: comment._id,
     postId: comment.postId,
+    accountId: comment.accountId,
     platform: comment.platform,
     authorName: comment.authorName,
     authorHandle: comment.authorHandle ?? null,

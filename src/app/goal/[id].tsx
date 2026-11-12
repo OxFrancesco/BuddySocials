@@ -8,10 +8,10 @@ import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
 import { addDays } from "@shared/format";
 import { GOAL_METRICS, GOAL_METRIC_LABEL, goalTitle, monthOf, weekOf, type GoalMetric } from "@shared/goals";
-import { PLATFORMS, PLATFORM_LABEL, type Platform } from "@shared/platforms";
+import type { Platform } from "@shared/platforms";
 import { useToday } from "@/lib/hooks";
 import { Button } from "@/ui/button";
-import { Chips } from "@/ui/chips";
+import { Chips, platformOptions } from "@/ui/chips";
 import { Body, Display } from "@/ui/text";
 import { color, font } from "@/theme";
 
@@ -119,7 +119,7 @@ export default function GoalEditor() {
       />
       <Chips
         testIDPrefix="goal-platform"
-        options={[{ value: "all" as Platform | "all", label: "All" }, ...PLATFORMS.map((value) => ({ value: value as Platform | "all", label: PLATFORM_LABEL[value] }))]}
+        options={platformOptions()}
         value={platform}
         onChange={setPlatform}
       />

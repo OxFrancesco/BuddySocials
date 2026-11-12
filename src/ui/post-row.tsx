@@ -2,8 +2,8 @@ import { router } from "expo-router";
 import { Pressable, View } from "react-native";
 import type { PostSummary } from "../../convex/dashboard";
 import { compact, relativeTime } from "@shared/format";
-import { PLATFORM_LABEL } from "@shared/platforms";
 import { color } from "@/theme";
+import { Byline } from "./byline";
 import { Body, Label } from "./text";
 import { Thumb } from "./thumb";
 
@@ -34,9 +34,7 @@ export function PostRow({ post, now }: { post: PostSummary; now: number }) {
         <Body numberOfLines={2} style={{ fontSize: 13, lineHeight: 19 }}>
           {post.title ?? post.text ?? "Untitled"}
         </Body>
-        <Label size={10}>
-          {PLATFORM_LABEL[post.platform]} · {relativeTime(post.publishedAt, now)}
-        </Label>
+        <Byline platform={post.platform} accountId={post.accountId} parts={[relativeTime(post.publishedAt, now)]} />
         {stats.length > 0 ? (
           <View style={{ flexDirection: "row", gap: 14, marginTop: 2 }}>
             {stats.map(([name, value]) => (

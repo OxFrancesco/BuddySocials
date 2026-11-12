@@ -4,8 +4,9 @@ import { Pressable, View } from "react-native";
 import { Sparkline } from "react-native-dither-kit";
 import { api } from "../../convex/_generated/api";
 import { compact, relativeTime } from "@shared/format";
-import { PLATFORM_COLOR, PLATFORM_TAG } from "@shared/platforms";
+import { PLATFORM_COLOR } from "@shared/platforms";
 import { useHour, useNow, useToday } from "@/lib/hooks";
+import { Byline } from "@/ui/byline";
 import { GoalCard } from "@/ui/goal-card";
 import { Thumb } from "@/ui/thumb";
 import { Body, Figure, Label } from "@/ui/text";
@@ -49,7 +50,7 @@ export function TopPostsBody({ config, height, cols }: WidgetBodyProps) {
                 <Body numberOfLines={1} style={{ fontSize: 13, lineHeight: 18 }}>
                   {post.title ?? post.text ?? "Untitled"}
                 </Body>
-                <Label size={10}>{PLATFORM_TAG[post.platform]}</Label>
+                <Byline platform={post.platform} accountId={post.accountId} parts={[]} />
               </View>
               <Body style={{ fontSize: 13 }}>{compact(post[metric] ?? 0)}</Body>
             </Pressable>
@@ -83,9 +84,7 @@ export function LatestPostBody({ config, rows }: WidgetBodyProps) {
           <Body numberOfLines={2} style={{ fontSize: 13, lineHeight: 18 }}>
             {post.title ?? post.text ?? "Untitled"}
           </Body>
-          <Label size={10}>
-            {PLATFORM_TAG[post.platform]} · {relativeTime(post.publishedAt, now)}
-          </Label>
+          <Byline platform={post.platform} accountId={post.accountId} parts={[relativeTime(post.publishedAt, now)]} />
         </View>
       </View>
       {rows > 1 && curve.length > 2 ? (
@@ -129,9 +128,11 @@ export function InboxBody({ config, rows }: WidgetBodyProps) {
       <View style={{ flex: 1, gap: 8, justifyContent: "flex-end" }}>
         {summary.latest.slice(0, show).map((comment) => (
           <View key={comment._id} style={{ gap: 2 }}>
-            <Label size={10} numberOfLines={1}>
-              {PLATFORM_TAG[comment.platform]} · {comment.authorHandle ?? comment.authorName} · {relativeTime(comment.publishedAt, now)}
-            </Label>
+            <Byline
+              platform={comment.platform}
+              accountId={comment.accountId}
+              parts={[comment.authorHandle ?? comment.authorName, relativeTime(comment.publishedAt, now)]}
+            />
             <Body numberOfLines={1} style={{ fontSize: 13, lineHeight: 18 }}>
               {comment.text}
             </Body>

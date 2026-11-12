@@ -7,13 +7,15 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import { relativeTime } from "@shared/format";
-import { PLATFORM_TAG, type Platform } from "@shared/platforms";
+import { PLATFORM_LABEL, type Platform } from "@shared/platforms";
 import { color, font } from "@/theme";
 import { Button } from "./button";
+import { Byline } from "./byline";
 import { Body, Label } from "./text";
 
 export type CommentItem = {
   _id: Id<"comments">;
+  accountId: Id<"accounts">;
   platform: Platform;
   authorName: string;
   authorHandle: string | null;
@@ -58,9 +60,7 @@ export function CommentRow({
         opacity: comment.state === "done" ? 0.6 : 1,
       }}
     >
-      <Label size={10} numberOfLines={1}>
-        {PLATFORM_TAG[comment.platform]} · {author(comment)} · {relativeTime(comment.publishedAt, now)}
-      </Label>
+      <Byline platform={comment.platform} accountId={comment.accountId} parts={[author(comment), relativeTime(comment.publishedAt, now)]} />
       <Body>{comment.text}</Body>
       {showPost && comment.postTitle ? (
         <Body tone="faint" numberOfLines={1} style={{ fontSize: 12, lineHeight: 18 }}>
@@ -121,7 +121,7 @@ export function ReplyBar({ comment, onClose }: { comment: CommentItem | null; on
       <View style={{ borderTopWidth: 2, borderTopColor: color.line, backgroundColor: color.bg, padding: 12, gap: 10 }}>
         <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
           <Label size={10} numberOfLines={1} style={{ flex: 1 }}>
-            Replying to {author(comment)} on {PLATFORM_TAG[comment.platform]}
+            Replying to {author(comment)} on {PLATFORM_LABEL[comment.platform]}
           </Label>
           <View style={{ flexDirection: "row", gap: 4 }}>
             {canDone ? (

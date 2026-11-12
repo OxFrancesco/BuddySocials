@@ -1,6 +1,6 @@
 import { FlexWidget, SvgWidget, TextWidget } from "react-native-android-widget";
 import { compact, percentChange, relativeTime, signedPercent } from "@shared/format";
-import { PLATFORM_COLOR, PLATFORM_LABEL, PLATFORM_TAG } from "@shared/platforms";
+import { PLATFORM_COLOR, PLATFORM_LABEL, platformLogoSvg, type Platform } from "@shared/platforms";
 import { ditherAreaSvg, ditherAreasSvg, ditherBarSvg, goalBarSvg } from "./dither-svg";
 import type { HomeSnapshot } from "./snapshot";
 
@@ -69,6 +69,11 @@ function Micro({ text, color = DIM, size = 10 }: { text: string; color?: Color; 
       style={{ fontFamily: "IBMPlexMono-Bold", fontSize: size, letterSpacing: 0.12, color }}
     />
   );
+}
+
+/** The platform's mark, white unless it stands in for a coloured legend swatch. */
+function Logo({ platform, size = 11, color = DIM }: { platform: Platform; size?: number; color?: string }) {
+  return <SvgWidget svg={platformLogoSvg(platform, size, color)} style={{ width: size, height: size }} />;
 }
 
 function Big({ text, size, color = FG }: { text: string; size: number; color?: Color }) {
@@ -184,7 +189,10 @@ export function ViewsWidget({ snapshot, ...size }: Size & { snapshot: HomeSnapsh
       ) : !narrow && platforms.length > 0 ? (
         <Row>
           {platforms.slice(0, size.width > 320 ? 5 : 3).map((entry) => (
-            <Micro key={entry.platform} text={`${PLATFORM_TAG[entry.platform]} ${compact(entry.views)}`} color={FG} />
+            <Row key={entry.platform} gap={5} fill={false}>
+              <Logo platform={entry.platform} color={FG} />
+              <Micro text={compact(entry.views)} color={FG} />
+            </Row>
           ))}
         </Row>
       ) : (
@@ -203,7 +211,10 @@ export function InboxWidget({ snapshot, ...size }: Size & { snapshot: HomeSnapsh
   const show = narrow ? (short ? 0 : 1) : short ? 1 : tall ? Math.max(2, Math.floor((size.height - 110) / 52)) : 2;
   const comments = snapshot.latest.slice(0, show).map((comment) => (
     <FlexWidget key={comment.id} style={{ flexDirection: "column", width: "match_parent" }}>
-      <Micro text={`${PLATFORM_TAG[comment.platform]} · ${comment.author} · ${relativeTime(comment.publishedAt, now)}`} />
+      <Row gap={6}>
+        <Logo platform={comment.platform} />
+        <Micro text={`${comment.author} · ${relativeTime(comment.publishedAt, now)}`} />
+      </Row>
       <Line text={comment.text} lines={narrow || tall ? 2 : 1} />
     </FlexWidget>
   ));
@@ -307,7 +318,7 @@ export function PlatformsWidget({ snapshot, ...size }: Size & { snapshot: HomeSn
   }
   const rowHeight = narrow ? 34 : 28;
   const fit = Math.max(1, Math.floor((size.height - 64) / rowHeight));
-  const tagWidth = 28;
+  const tagWidth = 14;
   const valueWidth = narrow ? 0 : 92;
   const barWidth = Math.max(24, inner - PAD * 2 - tagWidth - valueWidth - 20);
   return (
@@ -317,7 +328,7 @@ export function PlatformsWidget({ snapshot, ...size }: Size & { snapshot: HomeSn
         {entries.slice(0, fit).map((entry) => (
           <FlexWidget key={entry.platform} style={{ flexDirection: "row", alignItems: "center", flexGap: 10, width: "match_parent" }}>
             <FlexWidget style={{ width: tagWidth }}>
-              <Micro text={PLATFORM_TAG[entry.platform]} color={FG} size={11} />
+              <Logo platform={entry.platform} size={13} color={FG} />
             </FlexWidget>
             <SvgWidget
               svg={ditherBarSvg({ width: barWidth, height: 12, share: entry.views / max, color: PLATFORM_COLOR[entry.platform] })}
@@ -460,8 +471,8 @@ export function MixWidget({ snapshot, ...size }: Size & { snapshot: HomeSnapshot
       <FlexWidget style={{ flexDirection: tall && !narrow ? "column" : "row", flexGap: tall ? 6 : 12, width: "match_parent" }}>
         {legend.map((entry) => (
           <FlexWidget key={entry.platform} style={{ flexDirection: "row", alignItems: "center", flexGap: 6 }}>
-            <FlexWidget style={{ width: 8, height: 8, backgroundColor: PLATFORM_COLOR[entry.platform] }} />
-            <Micro text={tall && !narrow ? PLATFORM_LABEL[entry.platform] : PLATFORM_TAG[entry.platform]} color={FG} size={tall ? 11 : 10} />
+            <Logo platform={entry.platform} size={tall ? 12 : 11} color={PLATFORM_COLOR[entry.platform]} />
+            {tall && !narrow ? <Micro text={PLATFORM_LABEL[entry.platform]} color={FG} size={11} /> : null}
             <Micro text={compact(entry.daily.slice(-7).reduce((a, b) => a + b, 0))} color={DIM} size={tall ? 11 : 10} />
           </FlexWidget>
         ))}

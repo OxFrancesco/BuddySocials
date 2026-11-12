@@ -93,6 +93,7 @@ export const overview = query({
 function postSummary(post: Doc<"posts">) {
   return {
     _id: post._id,
+    accountId: post.accountId,
     platform: post.platform,
     kind: post.kind,
     title: post.title ?? null,

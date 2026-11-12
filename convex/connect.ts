@@ -10,6 +10,7 @@ import { requireOwner } from "./lib/owner";
 import { openCredential, sealCredential } from "./social/client";
 import { providerFor, toCredential } from "./social/oauth";
 import { platformValidator } from "./validators";
+import type { Platform } from "../shared/platforms";
 
 function base64url(bytes: Buffer): string {
   return bytes.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -34,9 +35,21 @@ function callbackUri(): string {
   return `${site}/oauth/callback`;
 }
 
+/**
+ * Asks the platform to show its login or account picker instead of reusing the
+ * account the browser is already signed in to. X, TikTok and LinkedIn have no
+ * such switch; they sign in whoever the browser has.
+ */
+function askForAccount(platform: Platform, authorizationUrl: string): string {
+  const url = new URL(authorizationUrl);
+  if (platform === "youtube") url.searchParams.set("prompt", "select_account consent");
+  if (platform === "instagram") url.searchParams.set("force_reauth", "true");
+  return url.toString();
+}
+
 /** Starts the platform's OAuth consent flow and returns the URL the phone opens. */
 export const begin = action({
-  args: { platform: platformValidator },
+  args: { platform: platformValidator, another: v.optional(v.boolean()) },
   handler: async (ctx, args): Promise<string> => {
     const owner = await requireOwner(ctx);
     const redirectUri = callbackUri();
@@ -59,14 +72,14 @@ export const begin = action({
       redirectUri,
       ...(started.providerState ? { providerState: started.providerState } : {}),
     });
-    return started.authorizationUrl;
+    return args.another ? askForAccount(args.platform, started.authorizationUrl) : started.authorizationUrl;
   },
 });
 
 /** Runs from the HTTP callback: exchanges the code, seals the token, creates the account. */
 export const complete = internalAction({
   args: { state: v.string(), callbackUrl: v.string() },
-  handler: async (ctx, args): Promise<{ platform: string } | { error: string }> => {
+  handler: async (ctx, args): Promise<{ platform: string; handle: string; existing: boolean } | { error: string }> => {
     const attempt = await ctx.runMutation(internal.connectStore.takeAttempt, { state: args.state });
     if (attempt === null) return { error: "That sign-in link expired. Try connecting again." };
     const tokens: { accountId: string; displayName: string; token: OAuthTokenSet }[] = [];
@@ -93,11 +106,13 @@ export const complete = internalAction({
         },
       });
       if (tokens.length === 0 || accounts.length === 0) return { error: "No account came back from the platform." };
+      let handle = "";
+      let existing = true;
       for (const entry of tokens) {
         const credential = toCredential(entry.token);
         const platformAccountId =
           attempt.platform === "instagram" ? await instagramUserId(credential.accessToken, entry.accountId) : entry.accountId;
-        await ctx.runMutation(internal.connectStore.storeConnection, {
+        const stored = await ctx.runMutation(internal.connectStore.storeConnection, {
           owner: attempt.owner,
           platform: attempt.platform,
           platformAccountId,
@@ -106,8 +121,10 @@ export const complete = internalAction({
           sealed: sealCredential(credential),
           ...(credential.expiresAt ? { expiresAt: credential.expiresAt } : {}),
         });
+        handle = entry.displayName;
+        existing &&= stored.existing;
       }
-      return { platform: attempt.platform };
+      return { platform: attempt.platform, handle, existing };
     } catch (error) {
       console.error("OAuth completion failed", attempt.platform, error);
       return { error: "The platform did not accept the sign-in. Try again." };

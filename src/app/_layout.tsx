@@ -86,6 +86,10 @@ function Navigator() {
             name="widget/[id]"
             options={{ presentation: "formSheet", sheetAllowedDetents: [0.75, 1], sheetGrabberVisible: true, contentStyle: { backgroundColor: color.bg, borderTopWidth: 3, borderTopColor: color.fg } }}
           />
+          <Stack.Screen
+            name="add-account"
+            options={{ presentation: "formSheet", sheetAllowedDetents: "fitToContents", sheetGrabberVisible: true, contentStyle: { backgroundColor: color.bg } }}
+          />
           <Stack.Screen name="add-widget" options={{ presentation: "modal", animation: "slide_from_bottom" }} />
           <Stack.Screen name="goal/[id]" options={{ presentation: "modal", animation: "slide_from_bottom" }} />
         </Stack.Protected>

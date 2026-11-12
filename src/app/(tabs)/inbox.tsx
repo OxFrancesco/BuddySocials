@@ -4,9 +4,9 @@ import { FlatList, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
-import { PLATFORMS, PLATFORM_LABEL, type Platform } from "@shared/platforms";
+import type { Platform } from "@shared/platforms";
 import { useNow } from "@/lib/hooks";
-import { Chips } from "@/ui/chips";
+import { Chips, platformOptions } from "@/ui/chips";
 import { CommentRow, ReplyBar } from "@/ui/comments";
 import { Body } from "@/ui/text";
 import { color } from "@/theme";
@@ -41,7 +41,7 @@ export default function Inbox() {
         <Chips
           scroll
           testIDPrefix="inbox-platform"
-          options={[{ value: "all" as Filter, label: "All" }, ...PLATFORMS.map((p) => ({ value: p as Filter, label: PLATFORM_LABEL[p] }))]}
+          options={platformOptions()}
           value={filter}
           onChange={setFilter}
         />

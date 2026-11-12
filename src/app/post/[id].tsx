@@ -14,6 +14,7 @@ import { useNow, useWide } from "@/lib/hooks";
 import { Button } from "@/ui/button";
 import { CommentRow, ReplyBar } from "@/ui/comments";
 import { Thumb } from "@/ui/thumb";
+import { Byline } from "@/ui/byline";
 import { Body, Display, Figure, Label } from "@/ui/text";
 import { color } from "@/theme";
 
@@ -112,9 +113,11 @@ export default function PostScreen() {
             <Display size={20} numberOfLines={3}>
               {post.title ?? post.text ?? "Untitled"}
             </Display>
-            <Label size={10}>
-              {PLATFORM_LABEL[post.platform]} · {relativeTime(post.publishedAt, now)} · updated {relativeTime(post.lastSyncedAt, now)}
-            </Label>
+            <Byline
+              platform={post.platform}
+              accountId={post.accountId}
+              parts={[relativeTime(post.publishedAt, now), `updated ${relativeTime(post.lastSyncedAt, now)}`]}
+            />
           </View>
         </View>
         {wide ? (
