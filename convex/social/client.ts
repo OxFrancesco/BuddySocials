@@ -33,8 +33,17 @@ export function adapterFor(
   switch (account.platform) {
     case "youtube":
       return youtube({ auth: { accessToken, channelId: account.platformAccountId } });
-    case "instagram":
-      return instagram({ auth: { accessToken, accountId: account.platformAccountId } });
+    case "instagram": {
+      const adapter = instagram({ auth: { accessToken, accountId: account.platformAccountId } });
+      // The adapter follows a video until Instagram has processed and posted it, but doesn't declare that it can.
+      return {
+        ...adapter,
+        capabilities: {
+          ...adapter.capabilities,
+          capabilities: [...adapter.capabilities.capabilities, { platform: "instagram", operation: "posts.status", availability: "available" }],
+        },
+      };
+    }
     case "x":
       return x({ auth: { userId: account.platformAccountId, accessToken } });
     case "linkedin":

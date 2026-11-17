@@ -26,7 +26,8 @@ const ENV: Record<Platform, { id: string; secret: string; scopes?: string }> = {
 
 /**
  * Scopes for stats, comments and posting. LinkedIn's comment and analytics scopes need
- * Community Management approval. `media.write` lets X posts carry images.
+ * Community Management approval. `media.write` lets X posts carry images. YouTube uploads ride on
+ * youtube.force-ssl; TikTok posts go to the creator's inbox (video.upload), which needs no app audit.
  */
 const SCOPES: Record<Platform, readonly string[]> = {
   youtube: [
@@ -40,8 +41,9 @@ const SCOPES: Record<Platform, readonly string[]> = {
     "instagram_business_basic",
     "instagram_business_manage_insights",
     "instagram_business_manage_comments",
+    "instagram_business_content_publish",
   ],
-  tiktok: ["user.info.basic", "user.info.stats", "video.list"],
+  tiktok: ["user.info.basic", "user.info.stats", "video.list", "video.upload"],
   x: ["tweet.read", "tweet.write", "users.read", "media.write", "offline.access"],
   linkedin: ["openid", "profile", "w_member_social"],
 };

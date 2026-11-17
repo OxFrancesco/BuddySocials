@@ -102,6 +102,11 @@ async function ownerFor(ctx: ActionCtx, request: Request): Promise<string | Resp
   return owner;
 }
 
+/** What each platform does differently when a post goes out, for whoever is choosing where to post. */
+const PLATFORM_NOTES =
+  "Instagram needs an image or a video (JPEG images). YouTube takes one MP4 video, uploaded unlisted with the text's first line as its title. " +
+  "TikTok takes one MP4 video and sends it to the TikTok app's inbox, where the caption and privacy are set before posting.";
+
 const accountIds = { type: "array", items: { type: "string" }, description: "Account IDs from list_accounts." };
 const mediaIds = {
   type: "array",
@@ -143,12 +148,12 @@ const TOOLS = [
   },
   {
     name: "publish_draft",
-    description: "Posts a saved draft to every target account it hasn't reached yet. This is public and cannot be undone here.",
+    description: `Posts a saved draft to every target account it hasn't reached yet. This is public and cannot be undone here. ${PLATFORM_NOTES}`,
     inputSchema: { type: "object", properties: { draft_id: { type: "string" } }, required: ["draft_id"], additionalProperties: false },
   },
   {
     name: "publish_post",
-    description: "Posts text to the given accounts right away. This is public and cannot be undone here. Use save_draft to keep it for later.",
+    description: `Posts text to the given accounts right away. This is public and cannot be undone here. Use save_draft to keep it for later. ${PLATFORM_NOTES}`,
     inputSchema: {
       type: "object",
       properties: { text: { type: "string" }, account_ids: accountIds, media_ids: mediaIds },
@@ -159,7 +164,7 @@ const TOOLS = [
   {
     name: "add_media_from_url",
     description:
-      "Fetches an image or video from a public https link and stores it. Returns a media_id to pass as media_ids to save_draft or publish_post. Images up to 20 MB; videos up to 200 MB, MP4 for X and LinkedIn.",
+      "Fetches an image or video from a public https link and stores it. Returns a media_id to pass as media_ids to save_draft or publish_post. Images up to 20 MB; videos up to 200 MB, MP4. Instagram takes JPEG images.",
     inputSchema: {
       type: "object",
       properties: { url: { type: "string", description: "A public https link to the file itself." }, filename: { type: "string" } },

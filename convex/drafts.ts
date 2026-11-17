@@ -4,7 +4,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation, internalQuery, mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { optionalOwner, requireOwner } from "./lib/owner";
 import { discard, hold, release, uploadFor } from "./media";
-import { MAX_DRAFT_MEDIA, MAX_DRAFT_TEXT, postingIssues } from "../shared/drafts";
+import { accountIssues, MAX_DRAFT_MEDIA, MAX_DRAFT_TEXT, postingIssues } from "../shared/drafts";
 
 const mediaValidator = v.object({
   storageId: v.id("_storage"),
@@ -264,7 +264,7 @@ export const accountsInternal = internalQuery({
       accountId: account._id,
       platform: account.platform,
       handle: account.handle,
-      canPost: postingIssues(account, "x", []).length === 0,
+      canPost: accountIssues(account).length === 0,
     }));
   },
 });

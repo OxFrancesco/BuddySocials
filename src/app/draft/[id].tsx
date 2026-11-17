@@ -151,10 +151,10 @@ export default function DraftEditor() {
   const failed = results.some((target) => target.state === "failed");
 
   // Saved drafts show the server's verdict. Unsaved edits are checked here so feedback is instant;
-  // whether X allows images is only known to the server, so that one shows after saving.
+  // the permissions each account allowed at sign-in are only known to the server, so those show after saving.
   const issuesByAccount = remaining.map((account) => {
     const target = targetOf(account._id);
-    const issues = !dirty && target ? target.issues : postingIssues({ ...account, scopes: ["media.write"] }, text, checked);
+    const issues = !dirty && target ? target.issues : postingIssues(account, text, checked, { permissions: false });
     return { handle: account.handle, issues };
   });
   const issueLines = [...new Set(issuesByAccount.flatMap((entry) => entry.issues))].map((issue) => {
