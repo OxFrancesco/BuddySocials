@@ -9,6 +9,7 @@ mod fmt;
 mod home;
 mod media;
 mod pages;
+mod preview;
 mod theme;
 mod ui;
 mod update;
@@ -104,6 +105,8 @@ pub struct App {
     pub next_key: u64,
     /// Wall clock in milliseconds, refreshed by `poll`.
     pub now: f64,
+    /// Small pictures of each draft's first attachment, for the drafts page.
+    pub thumbs: preview::Thumbs,
     /// Whether a newer build of the app is waiting, and how far along installing it is.
     pub update: update::State,
     /// When the app last asked for a newer build.
@@ -204,6 +207,7 @@ fn init() -> App {
         jobs: media::Jobs::default(),
         next_key: 0,
         now: fmt::now_ms(),
+        thumbs: preview::Thumbs::default(),
         update: update::State::Current,
         update_checked: fmt::now_ms(),
     };
@@ -222,6 +226,7 @@ fn init() -> App {
 
 fn setup(s: &mut App, wake: rune::Waker) {
     s.jobs.set_waker(wake.clone());
+    s.thumbs.set_waker(wake.clone());
     if std::env::var_os("BUDDYSOCIALS_FIXTURE").is_some() {
         return;
     }
@@ -298,6 +303,11 @@ fn absorb(s: &mut App) -> (bool, Vec<String>) {
         }
     }
     changed |= media::absorb(s);
+    changed |= preview::absorb(s);
+    if s.tab == Tab::Posts && s.show_drafts {
+        // Without a running backend the window is drawn once, so its pictures have to be there already.
+        preview::sync(s, fixture);
+    }
     if new_data && matches!(s.auth, AuthState::SignedIn { .. }) {
         save_cache(&s.data);
     }
@@ -629,6 +639,7 @@ fn main() {
             ("drafts", |s| {
                 s.tab = Tab::Posts;
                 s.show_drafts = true;
+                preview::sync(s, true);
             }),
             ("draft-editor", |s| {
                 s.tab = Tab::Posts;

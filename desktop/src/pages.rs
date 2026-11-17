@@ -4,9 +4,9 @@ use rune::{El, col, el, row, text, text_input};
 use serde_json::{Value as Json, json};
 
 use crate::backend::{AuthState, Cmd};
-use crate::{App, DraftEdit, fmt, home, media, theme, ui};
+use crate::{App, DraftEdit, fmt, home, media, preview, theme, ui};
 
-fn open(url: String) -> impl Fn(&mut App, &mut rune::Tx) {
+pub(crate) fn open(url: String) -> impl Fn(&mut App, &mut rune::Tx) {
     move |s, tx| {
         if !url.is_empty() && tx.open_url(&url).is_err() {
             s.notice = Some("Could not open your browser.".into());
@@ -184,62 +184,10 @@ fn drafts(s: &App) -> El {
         content = content.child(draft_editor(s, edit));
     }
     let Some(drafts) = s.query("drafts:list", json!({})).and_then(Json::as_array) else { return ui::page("drafts", Some(bar), content) };
-    let mut list = col().px(24.0);
     if drafts.is_empty() && s.draft.is_none() {
-        list = list.child(ui::empty("No drafts yet."));
+        content = content.child(col().px(24.0).child(ui::empty("No drafts yet.")));
     }
-    for draft in drafts {
-        let id = draft["_id"].as_str().unwrap_or("").to_string();
-        if s.draft.as_ref().and_then(|edit| edit.id.as_deref()) == Some(id.as_str()) {
-            continue;
-        }
-        let body = draft["text"].as_str().unwrap_or("");
-        let attached = draft["media"].as_array().map(Vec::len).unwrap_or(0);
-        let title = body.lines().find(|line| !line.trim().is_empty()).unwrap_or(if attached > 0 { "No text" } else { "Empty draft" }).to_string();
-        let (status, alert) = match draft["status"].as_str().unwrap_or("") {
-            "publishing" => ("Publishing", false),
-            "published" => ("Published", false),
-            "partial" => ("Partly published", true),
-            "failed" => ("Failed", true),
-            _ => ("", false),
-        };
-        let mut marks = row().gap(6.0).center_y();
-        for target in draft["targets"].as_array().into_iter().flatten() {
-            marks = marks.child(el().size(10.0, 10.0).fill(theme::platform_color(target["platform"].as_str().unwrap_or(""))));
-        }
-        let accounts: Vec<String> = draft["targets"].as_array().into_iter().flatten().filter_map(|target| target["accountId"].as_str().map(str::to_string)).collect();
-        let (open_id, open_text, open_media) = (id.clone(), body.to_string(), draft["media"].clone());
-        let mut line = row()
-            .key(format!("draft-{id}"))
-            .py(14.0)
-            .gap(16.0)
-            .center_y()
-            .border_sides([0.0, 0.0, 1.0, 0.0], theme::line())
-            .cursor(rune::Cursor::Pointer)
-            .hover(theme::FG.alpha(0.06))
-            .on_press(move |s: &mut App| {
-                let mut opened = DraftEdit::new(Some(open_id.clone()), &open_text, accounts.clone());
-                opened.media = media::open_saved(s, &open_media);
-                s.draft = Some(opened);
-            })
-            .child(marks)
-            .child(text(title).font(theme::mono(14.0)).color(theme::FG).truncate().grow(1.0).min_w(0.0));
-        if attached > 0 {
-            let videos = draft["media"].as_array().into_iter().flatten().filter(|item| item["kind"] == "video").count();
-            let what = match (attached - videos, videos) {
-                (images, 0) => format!("{images} image{}", if images == 1 { "" } else { "s" }),
-                (0, videos) => format!("{videos} video{}", if videos == 1 { "" } else { "s" }),
-                (images, videos) => format!("{} attachments", images + videos),
-            };
-            line = line.child(text(what.to_uppercase()).font(theme::label(10.0)).color(theme::DIM));
-        }
-        if !status.is_empty() {
-            line = line.child(text(status.to_uppercase()).font(theme::label(10.0)).color(if alert { theme::coral() } else { theme::DIM }));
-        }
-        line = line.child(text(fmt::relative_time(draft["updatedAt"].as_f64().unwrap_or(0.0), s.now).to_uppercase()).font(theme::label(10.0)).color(theme::FAINT));
-        list = list.child(line);
-    }
-    ui::page("drafts", Some(bar), content.child(list).child(cleanup(s)))
+    ui::page("drafts", Some(bar), content.child(preview::gallery(s, drafts)).child(cleanup(s)))
 }
 
 /// Unused uploads: when they are deleted, how much is waiting, and a button to delete them now.
