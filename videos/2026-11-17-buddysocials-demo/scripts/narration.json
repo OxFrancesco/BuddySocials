@@ -1,0 +1,16 @@
+{
+  "voiceId": "iP95p4xoKVk53GoZ742B",
+  "voiceName": "Chris",
+  "model": "eleven_multilingual_v2",
+  "settings": { "stability": 0.45, "similarity_boost": 0.75, "style": 0.15, "use_speaker_boost": true },
+  "lines": [
+    { "id": "01-hook", "text": "Five platforms. Five dashboards. Five tabs you never close." },
+    { "id": "02-board", "text": "Buddy Socials puts them all on one board. YouTube, Instagram, TikTok, X and LinkedIn. Every account, side by side." },
+    { "id": "03-yours", "text": "And the board is yours. Pick your widgets, resize them, and drag them into place on your phone. The desktop follows in real time." },
+    { "id": "04-posts", "text": "Every post shows the numbers its own platform reports." },
+    { "id": "05-publish", "text": "Write a post once. Add a picture or a video, crop it, choose your accounts, and publish to all of them at once." },
+    { "id": "06-inbox", "text": "Comments from every platform land in one inbox. And goals tell you if you're on pace." },
+    { "id": "07-apps", "text": "It runs on macOS and Linux, and it updates itself. On Android, seven resizable widgets put your numbers right on the home screen." },
+    { "id": "08-end", "text": "Buddy Socials. All your socials, on a board you built." }
+  ]
+}
