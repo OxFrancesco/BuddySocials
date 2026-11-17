@@ -350,3 +350,23 @@ export const recordDelivery = internalMutation({
     await ctx.db.patch("draftDeliveries", deliveryId, { ...fields, updatedAt: Date.now() });
   },
 });
+
+/**
+ * Publishes a draft later, at `at` (milliseconds since 1970), so a batch of posts goes out spaced apart.
+ * The checks run again at that time, so a post that can no longer go out fails then instead of being sent.
+ */
+export const scheduleInternal = internalMutation({
+  args: { owner: v.string(), draftId: v.id("drafts"), at: v.number() },
+  handler: async (ctx, args): Promise<Id<"_scheduled_functions">> => {
+    const draft = await ctx.db.get("drafts", args.draftId);
+    if (draft === null || draft.owner !== args.owner) throw new Error("Draft not found.");
+    return await ctx.scheduler.runAt(args.at, internal.drafts.publishInternal, { owner: args.owner, draftId: args.draftId });
+  },
+});
+
+/** Makes a YouTube video public later, at `at`. */
+export const scheduleYouTubePublicInternal = internalMutation({
+  args: { accountId: v.id("accounts"), videoId: v.string(), at: v.number() },
+  handler: async (ctx, args): Promise<Id<"_scheduled_functions">> =>
+    await ctx.scheduler.runAt(args.at, internal.publish.updateYouTube, { accountId: args.accountId, videoId: args.videoId, visibility: "public" }),
+});

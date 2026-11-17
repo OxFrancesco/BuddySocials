@@ -17,7 +17,7 @@ import { internalAction, type ActionCtx } from "./_generated/server";
 import { jpegSize } from "./social/probe";
 import { sendToTikTokInbox } from "./social/tiktokInbox";
 import { adapterFor, socialFor } from "./social/client";
-import { setYouTubeThumbnail, uploadToYouTube } from "./social/youtubeUpload";
+import { setYouTubeThumbnail, updateYouTubeVideo, uploadToYouTube } from "./social/youtubeUpload";
 import { errorMessage, load } from "./sync";
 
 /** A video upload and the platform's processing can take minutes; the SDK's default allowance is 30 seconds. */
@@ -268,6 +268,28 @@ export const applyCover = internalAction({
       return null;
     } catch (error) {
       console.error("apply cover", String(error));
+      return errorMessage(error).message;
+    }
+  },
+});
+
+/** Changes a YouTube video's visibility, title or description, such as making an unlisted Short public. */
+export const updateYouTube = internalAction({
+  args: {
+    accountId: v.id("accounts"),
+    videoId: v.string(),
+    visibility: v.optional(v.union(v.literal("public"), v.literal("unlisted"), v.literal("private"))),
+    title: v.optional(v.string()),
+    description: v.optional(v.string()),
+  },
+  handler: async (ctx, { accountId, videoId, ...change }): Promise<string | null> => {
+    try {
+      const loaded = await load(ctx, accountId);
+      if (loaded === null || loaded.credential === null || loaded.account.platform !== "youtube") throw new Error("Sign in to YouTube again.");
+      await updateYouTubeVideo(videoId, change, loaded.credential.accessToken);
+      return null;
+    } catch (error) {
+      console.error("update youtube", videoId, String(error));
       return errorMessage(error).message;
     }
   },

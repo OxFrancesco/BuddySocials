@@ -92,3 +92,38 @@ export async function setYouTubeThumbnail(videoId: string, image: Blob, accessTo
   if (response.status === 403) throw new Error("YouTube didn't allow the cover. Custom thumbnails need a verified channel: youtube.com/verify.");
   throw new Error(`YouTube refused the cover${body?.error?.message ? `: ${body.error.message}` : ` (HTTP ${response.status})`}`);
 }
+
+/**
+ * Changes who can see a video, or its title and description, after it is up.
+ * https://developers.google.com/youtube/v3/docs/videos/update
+ */
+export async function updateYouTubeVideo(
+  videoId: string,
+  change: { visibility?: Video["visibility"]; title?: string; description?: string },
+  accessToken: string,
+): Promise<void> {
+  const headers = { authorization: `Bearer ${accessToken}`, "content-type": "application/json; charset=UTF-8" };
+  const parts: string[] = [];
+  const body: Record<string, unknown> = { id: videoId };
+  if (change.visibility !== undefined) {
+    parts.push("status");
+    body["status"] = { privacyStatus: change.visibility, selfDeclaredMadeForKids: false };
+  }
+  if (change.title !== undefined || change.description !== undefined) {
+    // An update replaces the whole snippet, so the category and anything unchanged come from the video itself.
+    const current = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${encodeURIComponent(videoId)}`, { headers });
+    if (!current.ok) throw await refusal(current);
+    const snippet = ((await current.json()) as { items?: { snippet?: Record<string, unknown> }[] }).items?.[0]?.snippet;
+    if (!snippet) throw new Error("That video isn't on this YouTube channel.");
+    parts.push("snippet");
+    body["snippet"] = {
+      title: change.title ?? snippet["title"],
+      description: change.description ?? snippet["description"],
+      categoryId: snippet["categoryId"],
+      ...(snippet["tags"] ? { tags: snippet["tags"] } : {}),
+    };
+  }
+  if (parts.length === 0) return;
+  const response = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=${parts.join(",")}`, { method: "PUT", headers, body: JSON.stringify(body) });
+  if (!response.ok) throw await refusal(response);
+}
