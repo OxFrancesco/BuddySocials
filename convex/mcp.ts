@@ -115,6 +115,12 @@ const mediaIds = {
     "Images or one video to attach, as media IDs from add_media_from_url or create_media_upload. Up to 4 images, or 1 video on its own. On an existing draft this replaces its attachments; omit it to leave them as they are.",
 };
 
+const coverId = {
+  type: ["string", "null"],
+  description:
+    "A JPEG up to 2 MB to show before the video plays, as a media ID. It becomes the YouTube thumbnail and the Instagram Reel cover; TikTok's cover is chosen in the TikTok app. Null takes the cover off; omit it to leave it as it is. Setting it on a draft already on YouTube changes that video's thumbnail.",
+};
+
 const TOOLS = [
   {
     name: "list_accounts",
@@ -135,6 +141,7 @@ const TOOLS = [
         text: { type: "string" },
         account_ids: accountIds,
         media_ids: mediaIds,
+        cover_id: coverId,
         draft_id: { type: "string", description: "Omit to create a new draft." },
       },
       required: ["text", "account_ids"],
@@ -156,7 +163,7 @@ const TOOLS = [
     description: `Posts text to the given accounts right away. This is public and cannot be undone here. Use save_draft to keep it for later. ${PLATFORM_NOTES}`,
     inputSchema: {
       type: "object",
-      properties: { text: { type: "string" }, account_ids: accountIds, media_ids: mediaIds },
+      properties: { text: { type: "string" }, account_ids: accountIds, media_ids: mediaIds, cover_id: coverId },
       required: ["text", "account_ids"],
       additionalProperties: false,
     },
@@ -205,6 +212,14 @@ async function media(ctx: ActionCtx, owner: string, value: unknown): Promise<Id<
   return value as Id<"_storage">[];
 }
 
+/** Registers the cover upload for this owner. Undefined leaves a draft's cover alone; null takes it off. */
+async function cover(ctx: ActionCtx, owner: string, value: unknown): Promise<{ cover?: Id<"_storage"> | null }> {
+  if (value === undefined) return {};
+  if (value === null) return { cover: null };
+  const [storageId] = (await media(ctx, owner, [value])) ?? [];
+  return storageId ? { cover: storageId } : {};
+}
+
 function draftId(value: unknown): Id<"drafts"> {
   if (typeof value !== "string" || !value) throw new Error("draft_id is required.");
   return value as Id<"drafts">;
@@ -223,6 +238,7 @@ async function callTool(ctx: ActionCtx, owner: string, name: string, args: Recor
         text: text(args["text"]),
         accountIds: ids(args["account_ids"]),
         ...(attached ? { mediaIds: attached } : {}),
+        ...(await cover(ctx, owner, args["cover_id"])),
         ...(args["draft_id"] !== undefined ? { draftId: draftId(args["draft_id"]) } : {}),
       });
       return { draft_id: id };
@@ -241,6 +257,7 @@ async function callTool(ctx: ActionCtx, owner: string, name: string, args: Recor
         text: text(args["text"]),
         accountIds: ids(args["account_ids"]),
         ...(attached ? { mediaIds: attached } : {}),
+        ...(await cover(ctx, owner, args["cover_id"])),
       });
       const queued = await ctx.runMutation(internal.drafts.publishInternal, { owner, draftId: id });
       return { draft_id: id, queued, note: "Publishing runs in the background. Call list_drafts to see the result on each platform." };

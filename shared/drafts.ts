@@ -35,6 +35,11 @@ const POSTING_SCOPES: Partial<Record<Platform, readonly string[]>> = {
 export const MAX_DRAFT_TEXT = 5000;
 export const MAX_DRAFT_MEDIA = 4;
 
+/** A cover is the picture shown before a video plays: the YouTube thumbnail and the Instagram Reel cover. */
+export const COVER_TYPE = "image/jpeg";
+/** YouTube's limit for a thumbnail, the smallest of the platforms'. */
+export const MAX_COVER_BYTES = 2 * 1024 * 1024;
+
 export const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 /** TikTok and LinkedIn uploads load the video into memory on the server, which has about 512 MB, so this stays well under. */
 export const MAX_VIDEO_BYTES = 200 * 1024 * 1024;

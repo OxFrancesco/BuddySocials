@@ -163,6 +163,8 @@ export default defineSchema({
         filename: v.optional(v.string()),
       }),
     ),
+    /** The picture shown before the video plays, where the platform takes one. */
+    cover: v.optional(v.object({ storageId: v.id("_storage"), mimeType: v.string(), byteSize: v.number() })),
     /** The accounts this draft goes to. */
     accountIds: v.array(v.id("accounts")),
     createdAt: v.number(),

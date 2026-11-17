@@ -16,7 +16,8 @@ import type { Doc } from "./_generated/dataModel";
 import { internalAction, type ActionCtx } from "./_generated/server";
 import { jpegSize } from "./social/probe";
 import { sendToTikTokInbox } from "./social/tiktokInbox";
-import { uploadToYouTube } from "./social/youtubeUpload";
+import { adapterFor, socialFor } from "./social/client";
+import { setYouTubeThumbnail, uploadToYouTube } from "./social/youtubeUpload";
 import { errorMessage, load } from "./sync";
 
 /** A video upload and the platform's processing can take minutes; the SDK's default allowance is 30 seconds. */
@@ -97,6 +98,15 @@ async function sendToYouTube(ctx: ActionCtx, loaded: Loaded, draft: Doc<"drafts"
     { sourceUrl, byteSize: video.byteSize, mimeType: video.mimeType, title: youtubeTitle(text, video.filename), description: text, visibility: YOUTUBE_VISIBILITY },
     loaded.credential.accessToken,
   );
+  // The video is up either way; a cover YouTube refuses is no reason to call the post failed.
+  if (draft.cover) {
+    try {
+      const cover = await ctx.storage.get(draft.cover.storageId);
+      if (cover !== null) await setYouTubeThumbnail(videoId, cover, loaded.credential.accessToken);
+    } catch (error) {
+      console.error("publish youtube cover", String(error));
+    }
+  }
   // YouTube has the whole video and finishes processing it on its own.
   return {
     state: "processing",
@@ -173,7 +183,10 @@ export const deliver = internalAction({
     try {
       const loaded = await load(ctx, delivery.accountId);
       if (loaded === null) throw new Error("This account was disconnected.");
-      const { account, social } = loaded;
+      const { account } = loaded;
+      // A Reel's cover is fetched by Instagram from a link, like the video.
+      const reelCoverUrl = account.platform === "instagram" && draft.cover ? await ctx.storage.getUrl(draft.cover.storageId) : null;
+      const social = reelCoverUrl ? socialFor(adapterFor(account, loaded.credential, { reelCoverUrl })) : loaded.social;
       const accountRef = connectedAccountRef({ backend: "default", platform: account.platform, accountId: account.platformAccountId });
       const direct = account.source === "direct";
       let outcome: DeliveryOutcome | undefined =
@@ -181,7 +194,7 @@ export const deliver = internalAction({
           ? await sendToTikTok(ctx, loaded, draft, accountRef)
           : direct && account.platform === "youtube"
             ? await sendToYouTube(ctx, loaded, draft, accountRef)
-            : await publishWithSdk(ctx, loaded, draft, delivery, accountRef);
+            : await publishWithSdk(ctx, { ...loaded, social }, draft, delivery, accountRef);
       // Instagram posts a video only once it has processed it, and TikTok reports a failed upload a little later,
       // so both are followed until they settle. YouTube has the video by now and finishes on its own.
       while (
@@ -235,5 +248,27 @@ export const deliver = internalAction({
       });
     }
     return null;
+  },
+});
+
+/** Puts the draft's cover on a video that is already on YouTube. Returns what went wrong, or null. */
+export const applyCover = internalAction({
+  args: { deliveryId: v.id("draftDeliveries") },
+  handler: async (ctx, args): Promise<string | null> => {
+    const found: { delivery: Doc<"draftDeliveries">; draft: Doc<"drafts"> } | null = await ctx.runQuery(internal.drafts.deliveryInternal, {
+      deliveryId: args.deliveryId,
+    });
+    if (found === null || found.delivery.platform !== "youtube" || !found.delivery.platformPostId || !found.draft.cover) return "Nothing to set.";
+    try {
+      const loaded = await load(ctx, found.delivery.accountId);
+      if (loaded === null || loaded.credential === null) throw new Error("Sign in to YouTube again to set the cover.");
+      const cover = await ctx.storage.get(found.draft.cover.storageId);
+      if (cover === null) throw new Error("The cover is missing. Add it again.");
+      await setYouTubeThumbnail(found.delivery.platformPostId, cover, loaded.credential.accessToken);
+      return null;
+    } catch (error) {
+      console.error("apply cover", String(error));
+      return errorMessage(error).message;
+    }
   },
 });

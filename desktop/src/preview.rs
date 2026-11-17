@@ -79,10 +79,14 @@ fn set(thumb: &mut Thumb, image: &RgbaImage) {
 pub fn sync(s: &mut App, wait: bool) {
     let mut wanted = Vec::new();
     for draft in s.query("drafts:list", json!({})).and_then(Json::as_array).into_iter().flatten() {
-        let Some(first) = draft["media"].as_array().and_then(|media| media.first()) else { continue };
-        let (Some(id), Some(url)) = (first["storageId"].as_str(), first["url"].as_str()) else { continue };
-        if !s.thumbs.map.contains_key(id) && !wanted.iter().any(|(known, _, _): &(String, String, bool)| known == id) {
-            wanted.push((id.to_string(), url.to_string(), first["kind"] == "video"));
+        // The first attachment, and the cover that stands in for it where a platform shows one.
+        let first = draft["media"].as_array().and_then(|media| media.first());
+        for (picture, video) in [(first, first.is_some_and(|first| first["kind"] == "video")), (Some(&draft["cover"]), false)] {
+            let Some(picture) = picture else { continue };
+            let (Some(id), Some(url)) = (picture["storageId"].as_str(), picture["url"].as_str()) else { continue };
+            if !s.thumbs.map.contains_key(id) && !wanted.iter().any(|(known, _, _): &(String, String, bool)| known == id) {
+                wanted.push((id.to_string(), url.to_string(), video));
+            }
         }
     }
     if wanted.is_empty() {
@@ -297,7 +301,12 @@ fn group(s: &App, draft: &Json) -> El {
             handle: target["handle"].as_str().unwrap_or(""),
             text: body,
             title: if title.is_empty() { "No title" } else { title },
-            thumb: first.and_then(|first| first["storageId"].as_str()).and_then(|id| s.thumbs.map.get(id)),
+            // TikTok's cover is chosen in the TikTok app, so its mock-up keeps the video's own frame.
+            thumb: Some(&draft["cover"])
+                .filter(|_| target["platform"] != "tiktok")
+                .and_then(|cover| cover["storageId"].as_str())
+                .or_else(|| first.and_then(|first| first["storageId"].as_str()))
+                .and_then(|id| s.thumbs.map.get(id)),
             video: first.is_some_and(|first| first["kind"] == "video"),
             count: attachments.len(),
         };

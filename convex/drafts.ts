@@ -4,7 +4,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation, internalQuery, mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { optionalOwner, requireOwner } from "./lib/owner";
 import { discard, hold, release, uploadFor } from "./media";
-import { accountIssues, MAX_DRAFT_MEDIA, MAX_DRAFT_TEXT, postingIssues } from "../shared/drafts";
+import { accountIssues, COVER_TYPE, MAX_COVER_BYTES, MAX_DRAFT_MEDIA, MAX_DRAFT_TEXT, postingIssues } from "../shared/drafts";
 
 const mediaValidator = v.object({
   storageId: v.id("_storage"),
@@ -20,6 +20,8 @@ const saveArgs = {
   text: v.string(),
   accountIds: v.array(v.id("accounts")),
   media: v.optional(v.array(mediaValidator)),
+  /** An uploaded JPEG to show before the video plays. Null takes the cover off; omit it to leave the cover as it is. */
+  cover: v.optional(v.union(v.null(), v.id("_storage"))),
 };
 
 type Status = "draft" | "publishing" | "published" | "partial" | "failed";
@@ -85,6 +87,7 @@ async function listFor(ctx: QueryCtx, owner: string) {
         media: await Promise.all(
           draft.media.map(async (item) => ({ ...item, filename: item.filename ?? null, url: await ctx.storage.getUrl(item.storageId) })),
         ),
+        cover: draft.cover ? { storageId: draft.cover.storageId, url: await ctx.storage.getUrl(draft.cover.storageId) } : null,
         targets,
         status: statusOf(targets.length, deliveries, now),
         updatedAt: draft.updatedAt,
@@ -96,7 +99,7 @@ async function listFor(ctx: QueryCtx, owner: string) {
 async function saveFor(
   ctx: MutationCtx,
   owner: string,
-  args: { draftId?: Id<"drafts">; text: string; accountIds: Id<"accounts">[]; media?: Doc<"drafts">["media"] },
+  args: { draftId?: Id<"drafts">; text: string; accountIds: Id<"accounts">[]; media?: Doc<"drafts">["media"]; cover?: Id<"_storage"> | null },
 ): Promise<Id<"drafts">> {
   if (args.text.length > MAX_DRAFT_TEXT) throw new Error(`A draft holds up to ${MAX_DRAFT_TEXT} characters.`);
   if (args.media && args.media.length > MAX_DRAFT_MEDIA) throw new Error(`A draft holds up to ${MAX_DRAFT_MEDIA} attachments.`);
@@ -134,8 +137,29 @@ async function saveFor(
       });
     }
   }
+  // A cover is one of this person's uploads too. Undefined leaves the draft's cover alone; null takes it off.
+  let cover: Doc<"drafts">["cover"] | null | undefined;
+  if (args.cover === null) cover = null;
+  else if (args.cover !== undefined && args.cover !== draft?.cover?.storageId) {
+    const upload = await uploadFor(ctx, args.cover);
+    if (upload === null || upload.owner !== owner) throw new Error("The cover is missing. Add it again.");
+    if (upload.draftId !== undefined && upload.draftId !== draft?._id) throw new Error("That cover is already on another draft. Add it again to use it here.");
+    if (upload.mimeType !== COVER_TYPE) throw new Error("A cover has to be a JPEG image.");
+    if (upload.byteSize > MAX_COVER_BYTES) throw new Error("A cover can be up to 2 MB.");
+    if (media?.some((item) => item.storageId === upload.storageId)) throw new Error("The cover can't also be an attachment.");
+    uploads.push(upload);
+    cover = { storageId: upload.storageId, mimeType: upload.mimeType, byteSize: upload.byteSize };
+  }
   if (draft === null) {
-    const draftId = await ctx.db.insert("drafts", { owner, text: args.text, media: media ?? [], accountIds, createdAt: now, updatedAt: now });
+    const draftId = await ctx.db.insert("drafts", {
+      owner,
+      text: args.text,
+      media: media ?? [],
+      ...(cover ? { cover } : {}),
+      accountIds,
+      createdAt: now,
+      updatedAt: now,
+    });
     for (const upload of uploads) await hold(ctx, upload, draftId);
     return draftId;
   }
@@ -152,10 +176,20 @@ async function saveFor(
     text: args.text,
     accountIds: [...new Set([...sent, ...accountIds])],
     ...(media ? { media } : {}),
+    ...(cover !== undefined ? { cover: cover ?? undefined } : {}),
     updatedAt: now,
   });
+  for (const upload of uploads) if (upload.draftId === undefined) await hold(ctx, upload, draft._id);
+  if (cover !== undefined && draft.cover) await release(ctx, owner, { ...draft.cover, kind: "image" });
+  if (cover) {
+    // A video already on YouTube gets the new cover as its thumbnail.
+    for (const delivery of deliveries) {
+      if (delivery.platform === "youtube" && delivery.state === "published" && delivery.platformPostId) {
+        await ctx.scheduler.runAfter(0, internal.publish.applyCover, { deliveryId: delivery._id });
+      }
+    }
+  }
   if (media) {
-    for (const upload of uploads) if (upload.draftId === undefined) await hold(ctx, upload, draft._id);
     // Anything taken off the draft waits for cleanup instead of staying in storage for good.
     for (const item of draft.media) {
       if (!media.some((next) => next.storageId === item.storageId)) await release(ctx, owner, item);
@@ -173,6 +207,7 @@ async function removeFor(ctx: MutationCtx, owner: string, draftId: Id<"drafts">)
     .take(40);
   for (const delivery of deliveries) await ctx.db.delete("draftDeliveries", delivery._id);
   for (const item of draft.media) await discard(ctx, item.storageId);
+  if (draft.cover) await discard(ctx, draft.cover.storageId);
   await ctx.db.delete("drafts", draftId);
 }
 
@@ -249,7 +284,14 @@ export const listInternal = internalQuery({
 
 export const saveInternal = internalMutation({
   /** `mediaIds` names uploads by their storage ID; omit it to leave a draft's attachments as they are. */
-  args: { owner: v.string(), draftId: saveArgs.draftId, text: saveArgs.text, accountIds: saveArgs.accountIds, mediaIds: v.optional(v.array(v.id("_storage"))) },
+  args: {
+    owner: v.string(),
+    draftId: saveArgs.draftId,
+    text: saveArgs.text,
+    accountIds: saveArgs.accountIds,
+    mediaIds: v.optional(v.array(v.id("_storage"))),
+    cover: saveArgs.cover,
+  },
   handler: async (ctx, { owner, mediaIds, ...args }) =>
     // saveFor replaces these with the server's own record of each upload.
     saveFor(ctx, owner, {

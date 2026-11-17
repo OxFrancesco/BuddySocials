@@ -23,9 +23,25 @@ export type PlatformCredential = {
 
 const LINKEDIN_API_VERSION = "202610";
 
+/** Adds a cover to the Reel the adapter is about to make: the SDK has no setting for it. */
+function withReelCover(coverUrl: string): typeof fetch {
+  return async (input, init) => {
+    if (init?.method === "POST" && typeof init.body === "string") {
+      try {
+        const body = JSON.parse(init.body) as Record<string, unknown>;
+        if (body["media_type"] === "REELS") return await fetch(input, { ...init, body: JSON.stringify({ ...body, cover_url: coverUrl }) });
+      } catch {
+        // Not JSON, so not the request that makes the Reel.
+      }
+    }
+    return await fetch(input, init);
+  };
+}
+
 export function adapterFor(
   account: Doc<"accounts">,
   credential: PlatformCredential | null,
+  { reelCoverUrl }: { reelCoverUrl?: string } = {},
 ): SocialAdapter<unknown> {
   if (account.source === "demo") return demoAdapter();
   if (credential === null) throw new Error(`${account.platform} needs to be reconnected.`);
@@ -34,7 +50,10 @@ export function adapterFor(
     case "youtube":
       return youtube({ auth: { accessToken, channelId: account.platformAccountId } });
     case "instagram": {
-      const adapter = instagram({ auth: { accessToken, accountId: account.platformAccountId } });
+      const adapter = instagram({
+        auth: { accessToken, accountId: account.platformAccountId },
+        ...(reelCoverUrl ? { fetch: withReelCover(reelCoverUrl) } : {}),
+      });
       // The adapter follows a video until Instagram has processed and posted it, but doesn't declare that it can.
       return {
         ...adapter,

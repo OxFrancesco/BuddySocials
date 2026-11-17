@@ -73,3 +73,22 @@ export async function uploadToYouTube(video: Video, accessToken: string): Promis
   }
   throw new Error("YouTube didn't confirm the upload. Check YouTube before publishing again, so it isn't posted twice.");
 }
+
+/**
+ * Sets a video's thumbnail. YouTube only lets verified channels do this, and says so when it refuses.
+ * https://developers.google.com/youtube/v3/docs/thumbnails/set
+ */
+export async function setYouTubeThumbnail(videoId: string, image: Blob, accessToken: string): Promise<void> {
+  const response = await fetch(`https://www.googleapis.com/upload/youtube/v3/thumbnails/set?uploadType=media&videoId=${encodeURIComponent(videoId)}`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${accessToken}`, "content-type": image.type || "image/jpeg" },
+    body: image,
+  });
+  if (response.ok) return;
+  const body = (await response.json().catch(() => null)) as { error?: { message?: string; errors?: { reason?: string }[] } } | null;
+  const reason = body?.error?.errors?.[0]?.reason ?? "";
+  console.error("youtube thumbnail", response.status, reason, body?.error?.message ?? "");
+  if (response.status === 401) throw new Error("Sign in to YouTube again to set the cover.");
+  if (response.status === 403) throw new Error("YouTube didn't allow the cover. Custom thumbnails need a verified channel: youtube.com/verify.");
+  throw new Error(`YouTube refused the cover${body?.error?.message ? `: ${body.error.message}` : ` (HTTP ${response.status})`}`);
+}
