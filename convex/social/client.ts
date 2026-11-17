@@ -23,6 +23,28 @@ export type PlatformCredential = {
 
 const LINKEDIN_API_VERSION = "202610";
 
+/**
+ * Two fixes for the SDK's YouTube upload (0.5.0). It starts an upload asking for `processingDetails`,
+ * which YouTube refuses there ("unexpectedPart"), so that part is dropped. And it reports a refused
+ * upload by its status alone, so YouTube's own reason is logged.
+ */
+const youtubeFetch: typeof fetch = async (input, init) => {
+  let target = input;
+  if (typeof input === "string" || input instanceof URL) {
+    const url = new URL(input);
+    if (url.pathname === "/upload/youtube/v3/videos" && url.searchParams.has("part")) {
+      const parts = url.searchParams.get("part")!.split(",").filter((part) => part !== "processingDetails");
+      url.searchParams.set("part", parts.join(","));
+      target = url;
+    }
+  }
+  const response = await fetch(target, init);
+  if (!response.ok && response.status !== 308 && String(target).includes("/upload/youtube/")) {
+    console.error("youtube upload", response.status, (await response.clone().text().catch(() => "")).slice(0, 1000));
+  }
+  return response;
+};
+
 export function adapterFor(
   account: Doc<"accounts">,
   credential: PlatformCredential | null,
@@ -32,7 +54,7 @@ export function adapterFor(
   const accessToken = credential.accessToken;
   switch (account.platform) {
     case "youtube":
-      return youtube({ auth: { accessToken, channelId: account.platformAccountId } });
+      return youtube({ auth: { accessToken, channelId: account.platformAccountId }, fetch: youtubeFetch });
     case "instagram": {
       const adapter = instagram({ auth: { accessToken, accountId: account.platformAccountId } });
       // The adapter follows a video until Instagram has processed and posted it, but doesn't declare that it can.
