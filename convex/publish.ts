@@ -192,6 +192,10 @@ export const deliver = internalAction({
         throw new Error(account.platform === "tiktok" ? `TikTok couldn't take the video (${outcome.code.replaceAll("_", " ")}).` : outcome.message);
       } else if (outcome.state === "not-submitted" && outcome.issues?.[0]) {
         throw new Error(outcome.issues[0].message);
+      } else if (outcome.state === "unknown") {
+        // The platform may or may not have the post, so the person is told to look before sending it twice.
+        console.error("publish", delivery.platform, "unknown outcome", outcome.reason, outcome.diagnostic ?? "");
+        throw new Error(`${label} didn't confirm the post. Check ${label} before publishing again, so it isn't posted twice.`);
       } else {
         throw new Error("The post was not sent. Check the account before trying again.");
       }

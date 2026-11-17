@@ -58,6 +58,10 @@ pub enum Cmd {
     Upload { key: u64, path: PathBuf, mime: String, name: String },
     /// Fetches a saved attachment to a local file.
     Download { key: u64, url: String, to: PathBuf },
+    /// Asks whether a newer build of the app exists.
+    CheckUpdate,
+    /// Downloads that build and puts it in place of this one.
+    InstallUpdate(crate::update::Latest),
 }
 
 pub enum Event {
@@ -69,6 +73,9 @@ pub enum Event {
     /// The server's record of an uploaded file, or why it didn't arrive.
     Uploaded { key: u64, result: Result<Json, String> },
     Downloaded { key: u64, result: Result<PathBuf, String> },
+    UpdateAvailable(crate::update::Latest),
+    /// The new build is installed and how to start it, or why it couldn't be.
+    UpdateInstalled(Result<crate::update::Relaunch, String>),
 }
 
 enum Internal {
@@ -154,6 +161,8 @@ async fn connect(out: &Out) -> ConvexClient {
 }
 
 async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, out: Out) {
+    // Before anything else, so an app too old to connect can still update itself.
+    check_update(out.clone());
     let mut client = connect(&out).await;
     let (internal_tx, mut internal) = mpsc::unbounded_channel::<Internal>();
     let mut subscriptions: HashMap<QuerySpec, JoinHandle<()>> = HashMap::new();
@@ -250,6 +259,14 @@ async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, out: Out) {
                             out.push(Event::Downloaded { key, result });
                         });
                     }
+                    Cmd::CheckUpdate => check_update(out.clone()),
+                    Cmd::InstallUpdate(latest) => {
+                        let out = out.clone();
+                        tokio::spawn(async move {
+                            let result = crate::update::install(&latest).await.map_err(|error| error.to_string());
+                            out.push(Event::UpdateInstalled(result));
+                        });
+                    }
                     Cmd::Connect { platform, another, pages } => {
                         let mut client = client.clone();
                         let out = out.clone();
@@ -287,6 +304,15 @@ async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, out: Out) {
             }
         }
     }
+}
+
+/// Looks for a newer build in the background. No news means this one is current, or the check couldn't run.
+fn check_update(out: Out) {
+    tokio::spawn(async move {
+        if let Ok(Some(latest)) = crate::update::check().await {
+            out.push(Event::UpdateAvailable(latest));
+        }
+    });
 }
 
 /// Uploads a file in three steps: ask where, send the bytes, tell the server it arrived.

@@ -11,6 +11,7 @@ mod media;
 mod pages;
 mod theme;
 mod ui;
+mod update;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -103,6 +104,10 @@ pub struct App {
     pub next_key: u64,
     /// Wall clock in milliseconds, refreshed by `poll`.
     pub now: f64,
+    /// Whether a newer build of the app is waiting, and how far along installing it is.
+    pub update: update::State,
+    /// When the app last asked for a newer build.
+    update_checked: f64,
 }
 
 impl App {
@@ -176,8 +181,7 @@ impl App {
 }
 
 fn cache_path() -> Option<std::path::PathBuf> {
-    let home = std::env::var_os("HOME")?;
-    Some(std::path::PathBuf::from(home).join("Library/Caches/BuddySocials/dashboard.json"))
+    Some(config::cache_dir()?.join("dashboard.json"))
 }
 
 fn init() -> App {
@@ -200,6 +204,8 @@ fn init() -> App {
         jobs: media::Jobs::default(),
         next_key: 0,
         now: fmt::now_ms(),
+        update: update::State::Current,
+        update_checked: fmt::now_ms(),
     };
     // A saved dashboard, for rendering without a network (headless snapshots, tests).
     if let Some(path) = std::env::var_os("BUDDYSOCIALS_FIXTURE") {
@@ -276,6 +282,19 @@ fn absorb(s: &mut App) -> (bool, Vec<String>) {
             Event::Notice(message) => s.notice = Some(message),
             Event::Uploaded { key, result } => media::uploaded(s, key, result),
             Event::Downloaded { key, result } => media::downloaded(s, key, result),
+            Event::UpdateAvailable(latest) => {
+                // A check that lands while an update is going in doesn't restart it.
+                if matches!(s.update, update::State::Current | update::State::Available(_)) {
+                    s.update = update::State::Available(latest);
+                }
+            }
+            Event::UpdateInstalled(Ok(relaunch)) => s.update = update::State::Ready(relaunch),
+            Event::UpdateInstalled(Err(message)) => {
+                if let update::State::Installing(latest) = &s.update {
+                    s.update = update::State::Available(latest.clone());
+                }
+                s.notice = Some(message);
+            }
         }
     }
     changed |= media::absorb(s);
@@ -306,6 +325,22 @@ fn poll(s: &mut App, _clock: f64, tx: &mut Tx) -> bool {
     if s.backend.is_some() {
         // Relative times ("updated 5m") and the day's queries follow the clock.
         tx.wake_after(Duration::from_secs(30));
+        // The backend checks once when it starts; an app left open asks again a few times a day.
+        if s.now - s.update_checked > 6.0 * HOUR_MS {
+            s.update_checked = s.now;
+            s.send(Cmd::CheckUpdate);
+        }
+    }
+    if let update::State::Ready(relaunch) = &s.update {
+        // The new build is in place: start it and make room.
+        match relaunch.start() {
+            Ok(()) => std::process::exit(0),
+            Err(_) => {
+                s.update = update::State::Current;
+                s.notice = Some("BuddySocials is updated. Close it and open it again to use the new version.".into());
+                changed = true;
+            }
+        }
     }
     changed
 }
@@ -536,12 +571,24 @@ fn sidebar(s: &App) -> El {
     } else {
         String::new()
     };
+    let mut foot = col().padding(20.0).gap(12.0).items_start();
+    match &s.update {
+        update::State::Available(latest) => {
+            let latest = latest.clone();
+            foot = foot.child(text("NEW VERSION").key("update-status").font(theme::label(10.0)).color(theme::coral())).child(
+                ui::button("update", "Update", ui::Kind::Primary).on_press(move |s: &mut App| {
+                    s.update = update::State::Installing(latest.clone());
+                    s.send(Cmd::InstallUpdate(latest.clone()));
+                }),
+            );
+        }
+        update::State::Installing(_) | update::State::Ready(_) => {
+            foot = foot.child(text("UPDATING…").key("update-status").font(theme::label(10.0)).color(theme::coral()));
+        }
+        update::State::Current => {}
+    }
     nav.child(col().grow(1.0)).child(
-        col()
-            .padding(20.0)
-            .gap(12.0)
-            .items_start()
-            .child(text(status.to_uppercase()).key("sync-status").font(theme::label(10.0)).color(theme::DIM))
+        foot.child(text(status.to_uppercase()).key("sync-status").font(theme::label(10.0)).color(theme::DIM))
             .child(ui::button("refresh", "Refresh", ui::Kind::Outline).on_press(|s: &mut App| s.mutate("accounts:syncNow", json!({})))),
     )
 }
@@ -551,6 +598,13 @@ fn main() {
     if let Some(path) = args.iter().position(|arg| arg == "--fetch").and_then(|at| args.get(at + 1)) {
         if let Err(error) = fetch(path) {
             eprintln!("fetch failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if args.iter().any(|arg| arg == "--update") {
+        if let Err(error) = update::run_from_terminal() {
+            eprintln!("update failed: {error}");
             std::process::exit(1);
         }
         return;
@@ -607,6 +661,9 @@ fn main() {
             ("goals", |s| s.tab = Tab::Goals),
             ("accounts", |s| s.tab = Tab::Accounts),
             ("signed-out", |s| s.auth = AuthState::SignedOut),
+            ("update", |s| {
+                s.update = update::State::Available(update::Latest { version: "0.1.0".into(), url: String::new(), file_sha256: String::new(), program_sha256: String::new() });
+            }),
         ],
         setup: Some(setup),
         poll: Some(poll),

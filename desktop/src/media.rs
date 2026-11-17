@@ -118,8 +118,7 @@ impl Jobs {
 }
 
 fn work_dir() -> PathBuf {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-    let dir = home.join("Library/Caches/BuddySocials/media");
+    let dir = crate::config::cache_dir().unwrap_or_else(|| std::env::temp_dir().join("BuddySocials")).join("media");
     let _ = std::fs::create_dir_all(&dir);
     dir
 }

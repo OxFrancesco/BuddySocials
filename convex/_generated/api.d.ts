@@ -14,6 +14,7 @@ import type * as connect from "../connect.js";
 import type * as connectStore from "../connectStore.js";
 import type * as crons from "../crons.js";
 import type * as dashboard from "../dashboard.js";
+import type * as desktopReleases from "../desktopReleases.js";
 import type * as drafts from "../drafts.js";
 import type * as goals from "../goals.js";
 import type * as homeWidgets from "../homeWidgets.js";
@@ -32,6 +33,8 @@ import type * as social_demo from "../social/demo.js";
 import type * as social_extract from "../social/extract.js";
 import type * as social_linkedinPages from "../social/linkedinPages.js";
 import type * as social_oauth from "../social/oauth.js";
+import type * as social_probe from "../social/probe.js";
+import type * as social_tiktokInbox from "../social/tiktokInbox.js";
 import type * as sync from "../sync.js";
 import type * as validators from "../validators.js";
 
@@ -48,6 +51,7 @@ declare const fullApi: ApiFromModules<{
   connectStore: typeof connectStore;
   crons: typeof crons;
   dashboard: typeof dashboard;
+  desktopReleases: typeof desktopReleases;
   drafts: typeof drafts;
   goals: typeof goals;
   homeWidgets: typeof homeWidgets;
@@ -66,6 +70,8 @@ declare const fullApi: ApiFromModules<{
   "social/extract": typeof social_extract;
   "social/linkedinPages": typeof social_linkedinPages;
   "social/oauth": typeof social_oauth;
+  "social/probe": typeof social_probe;
+  "social/tiktokInbox": typeof social_tiktokInbox;
   sync: typeof sync;
   validators: typeof validators;
 }>;

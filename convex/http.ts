@@ -51,6 +51,21 @@ http.route({
   }),
 });
 
+/** The desktop app asks this which build is newest for its platform. Nothing here is private. */
+http.route({
+  path: "/desktop/latest",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const platform = new URL(request.url).searchParams.get("platform") ?? "";
+    if (!/^[a-z0-9]+-[a-z0-9_]+$/.test(platform)) return new Response("Bad request", { status: 400 });
+    const latest = await ctx.runQuery(internal.desktopReleases.latest, { platform });
+    return new Response(JSON.stringify(latest), {
+      status: latest === null ? 404 : 200,
+      headers: { "content-type": "application/json", "cache-control": "no-store" },
+    });
+  }),
+});
+
 /** The MCP server: one stateless endpoint, signed in through WorkOS AuthKit. */
 http.route({ path: "/mcp", method: "POST", handler: mcp.post });
 http.route({ path: "/mcp", method: "GET", handler: mcp.noStream });

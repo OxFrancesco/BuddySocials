@@ -24,9 +24,12 @@ export type PlatformCredential = {
 const LINKEDIN_API_VERSION = "202610";
 
 /**
- * Two fixes for the SDK's YouTube upload (0.5.0). It starts an upload asking for `processingDetails`,
- * which YouTube refuses there ("unexpectedPart"), so that part is dropped. And it reports a refused
- * upload by its status alone, so YouTube's own reason is logged.
+ * Three fixes for the SDK's YouTube upload (0.5.0):
+ * - It starts an upload asking for `processingDetails`, which YouTube refuses there ("unexpectedPart"),
+ *   so that part is dropped.
+ * - YouTube answers each chunk but the last with 308, and the SDK asks fetch to fail on redirects, which
+ *   308 counts as. Videos over 8 MB never finished. Uploads are sent with redirects left alone instead.
+ * - It reports a refused upload by its status alone, so YouTube's own reason is logged.
  */
 const youtubeFetch: typeof fetch = async (input, init) => {
   let target = input;
@@ -38,8 +41,9 @@ const youtubeFetch: typeof fetch = async (input, init) => {
       target = url;
     }
   }
-  const response = await fetch(target, init);
-  if (!response.ok && response.status !== 308 && String(target).includes("/upload/youtube/")) {
+  const uploading = String(target).includes("/upload/youtube/");
+  const response = await fetch(target, uploading ? { ...init, redirect: "manual" } : init);
+  if (!response.ok && response.status !== 308 && uploading) {
     console.error("youtube upload", response.status, (await response.clone().text().catch(() => "")).slice(0, 1000));
   }
   return response;

@@ -235,4 +235,18 @@ export default defineSchema({
   })
     .index("by_tokenHash", ["tokenHash"])
     .index("by_owner", ["owner"]),
+
+  /** Builds of the desktop app. The newest per platform is what installed apps update to. */
+  desktopReleases: defineTable({
+    /** The build's operating system and chip, such as "linux-aarch64" or "macos-aarch64". */
+    platform: v.string(),
+    version: v.string(),
+    /** The file to download: the program itself on Linux, a .tar.gz of the app bundle on macOS. */
+    storageId: v.id("_storage"),
+    byteSize: v.number(),
+    /** SHA-256 of the downloaded file, and of the program inside it. An app whose own program differs is out of date. */
+    fileSha256: v.string(),
+    programSha256: v.string(),
+    createdAt: v.number(),
+  }).index("by_platform_and_createdAt", ["platform", "createdAt"]),
 });

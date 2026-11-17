@@ -59,8 +59,7 @@ fn dev_file() -> Option<std::path::PathBuf> {
     if !cfg!(debug_assertions) {
         return None;
     }
-    let home = std::env::var_os("HOME")?;
-    Some(std::path::PathBuf::from(home).join("Library/Application Support/BuddySocials/dev-session.json"))
+    Some(crate::config::data_dir()?.join("dev-session.json"))
 }
 
 pub fn load() -> Option<Session> {
