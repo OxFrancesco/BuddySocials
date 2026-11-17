@@ -7,7 +7,7 @@ export const TEXT_LIMIT: Partial<Record<Platform, number>> = { x: 280, linkedin:
 export const CAN_POST: readonly Platform[] = ["linkedin", "x", "instagram", "tiktok", "youtube"];
 
 /** How a YouTube upload is shown. Change it on YouTube once the video is up. */
-export const YOUTUBE_VISIBILITY = "unlisted";
+export const YOUTUBE_VISIBILITY = "unlisted" as const;
 /** YouTube's longest title, in characters, and its longest description, in UTF-8 bytes. */
 export const YOUTUBE_TITLE_LIMIT = 100;
 export const YOUTUBE_DESCRIPTION_BYTES = 5000;
@@ -36,7 +36,7 @@ export const MAX_DRAFT_TEXT = 5000;
 export const MAX_DRAFT_MEDIA = 4;
 
 export const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
-/** Publishing loads a video into memory on the server, which has about 512 MB, so this stays well under. */
+/** TikTok and LinkedIn uploads load the video into memory on the server, which has about 512 MB, so this stays well under. */
 export const MAX_VIDEO_BYTES = 200 * 1024 * 1024;
 
 /** How long an unused upload is kept before it is deleted. The owner can also choose to clean up by hand only. */

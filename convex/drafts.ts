@@ -24,10 +24,22 @@ const saveArgs = {
 
 type Status = "draft" | "publishing" | "published" | "partial" | "failed";
 
-function statusOf(targets: number, deliveries: Doc<"draftDeliveries">[]): Status {
+/** A post takes at most ten minutes to send. One still marked as going after this long was cut off part way. */
+const STALLED_MS = 15 * 60_000;
+const STALLED = "Publishing stopped part way. Check the platform, then publish again.";
+
+/** Where a delivery stands now: a cut-off one counts as failed, so the draft can be edited and sent again. */
+function settled(delivery: Doc<"draftDeliveries">, now: number): { state: Doc<"draftDeliveries">["state"]; error: string | null } {
+  const going = delivery.state === "queued" || delivery.state === "sending";
+  if (going && now - delivery.updatedAt > STALLED_MS) return { state: "failed", error: STALLED };
+  return { state: delivery.state, error: delivery.error ?? null };
+}
+
+function statusOf(targets: number, deliveries: Doc<"draftDeliveries">[], now: number): Status {
   if (deliveries.length === 0) return "draft";
-  if (deliveries.some((delivery) => delivery.state === "queued" || delivery.state === "sending")) return "publishing";
-  const published = deliveries.filter((delivery) => delivery.state === "published").length;
+  const states = deliveries.map((delivery) => settled(delivery, now).state);
+  if (states.some((state) => state === "queued" || state === "sending")) return "publishing";
+  const published = states.filter((state) => state === "published").length;
   if (published === 0) return "failed";
   return published >= targets ? "published" : "partial";
 }
@@ -43,6 +55,7 @@ async function listFor(ctx: QueryCtx, owner: string) {
     .query("accounts")
     .withIndex("by_owner", (q) => q.eq("owner", owner))
     .take(20);
+  const now = Date.now();
   return await Promise.all(
     drafts.map(async (draft) => {
       const deliveries = await ctx.db
@@ -53,15 +66,16 @@ async function listFor(ctx: QueryCtx, owner: string) {
         const account = accounts.find((candidate) => candidate._id === accountId);
         if (!account) return [];
         const delivery = deliveries.find((candidate) => candidate.accountId === accountId);
+        const current = delivery ? settled(delivery, now) : null;
         return [
           {
             accountId,
             platform: account.platform,
             handle: account.handle,
-            issues: delivery?.state === "published" ? [] : postingIssues(account, draft.text, draft.media),
-            state: delivery?.state ?? null,
+            issues: current?.state === "published" ? [] : postingIssues(account, draft.text, draft.media),
+            state: current?.state ?? null,
             permalink: delivery?.permalink ?? null,
-            error: delivery?.error ?? null,
+            error: current?.error ?? null,
           },
         ];
       });
@@ -72,7 +86,7 @@ async function listFor(ctx: QueryCtx, owner: string) {
           draft.media.map(async (item) => ({ ...item, filename: item.filename ?? null, url: await ctx.storage.getUrl(item.storageId) })),
         ),
         targets,
-        status: statusOf(targets.length, deliveries),
+        status: statusOf(targets.length, deliveries, now),
         updatedAt: draft.updatedAt,
       };
     }),
@@ -129,7 +143,7 @@ async function saveFor(
     .query("draftDeliveries")
     .withIndex("by_draft", (q) => q.eq("draftId", draft._id))
     .take(40);
-  if (deliveries.some((delivery) => delivery.state === "queued" || delivery.state === "sending")) {
+  if (deliveries.some((delivery) => ["queued", "sending"].includes(settled(delivery, now).state))) {
     throw new Error("This draft is being published. Wait for it to finish.");
   }
   // What already went out stays as it was posted; only the text for the remaining accounts changes.
@@ -171,10 +185,11 @@ async function publishFor(ctx: MutationCtx, owner: string, draftId: Id<"drafts">
     .query("draftDeliveries")
     .withIndex("by_draft", (q) => q.eq("draftId", draftId))
     .take(40);
+  const started = Date.now();
   const pending: { account: Doc<"accounts">; delivery: Doc<"draftDeliveries"> | undefined }[] = [];
   for (const accountId of draft.accountIds) {
     const delivery = deliveries.find((candidate) => candidate.accountId === accountId);
-    if (delivery && delivery.state !== "failed") continue;
+    if (delivery && settled(delivery, started).state !== "failed") continue;
     const account = await ctx.db.get("accounts", accountId);
     if (account === null || account.owner !== owner) continue;
     const issues = postingIssues(account, draft.text, draft.media);

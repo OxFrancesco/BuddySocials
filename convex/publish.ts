@@ -16,6 +16,7 @@ import type { Doc } from "./_generated/dataModel";
 import { internalAction, type ActionCtx } from "./_generated/server";
 import { jpegSize } from "./social/probe";
 import { sendToTikTokInbox } from "./social/tiktokInbox";
+import { uploadToYouTube } from "./social/youtubeUpload";
 import { errorMessage, load } from "./sync";
 
 /** A video upload and the platform's processing can take minutes; the SDK's default allowance is 30 seconds. */
@@ -81,6 +82,28 @@ async function sendToTikTok(ctx: ActionCtx, loaded: Loaded, draft: Doc<"drafts">
     account: accountRef,
     observedAt: new Date().toISOString(),
     delivery: { kind: "delivery", version: 1, backend: accountRef.backend, platform: "tiktok", accountId: accountRef.accountId, deliveryId: publishId },
+  };
+}
+
+/** Uploads the draft's video to YouTube, unlisted, titled with the draft's first line. */
+async function sendToYouTube(ctx: ActionCtx, loaded: Loaded, draft: Doc<"drafts">, accountRef: ConnectedAccountRef): Promise<DeliveryOutcome> {
+  const video = draft.media[0];
+  if (video === undefined || video.kind !== "video") throw new Error("YouTube needs a video.");
+  if (loaded.credential === null) throw new Error("Sign in to YouTube again, then publish.");
+  const sourceUrl = await ctx.storage.getUrl(video.storageId);
+  if (sourceUrl === null) throw missing();
+  const text = draft.text.trim();
+  const videoId = await uploadToYouTube(
+    { sourceUrl, byteSize: video.byteSize, mimeType: video.mimeType, title: youtubeTitle(text, video.filename), description: text, visibility: YOUTUBE_VISIBILITY },
+    loaded.credential.accessToken,
+  );
+  // YouTube has the whole video and finishes processing it on its own.
+  return {
+    state: "processing",
+    targetIndex: 0,
+    account: accountRef,
+    observedAt: new Date().toISOString(),
+    delivery: { kind: "delivery", version: 1, backend: accountRef.backend, platform: "youtube", accountId: accountRef.accountId, deliveryId: videoId },
   };
 }
 
@@ -152,10 +175,13 @@ export const deliver = internalAction({
       if (loaded === null) throw new Error("This account was disconnected.");
       const { account, social } = loaded;
       const accountRef = connectedAccountRef({ backend: "default", platform: account.platform, accountId: account.platformAccountId });
+      const direct = account.source === "direct";
       let outcome: DeliveryOutcome | undefined =
-        account.platform === "tiktok" && account.source === "direct"
+        direct && account.platform === "tiktok"
           ? await sendToTikTok(ctx, loaded, draft, accountRef)
-          : await publishWithSdk(ctx, loaded, draft, delivery, accountRef);
+          : direct && account.platform === "youtube"
+            ? await sendToYouTube(ctx, loaded, draft, accountRef)
+            : await publishWithSdk(ctx, loaded, draft, delivery, accountRef);
       // Instagram posts a video only once it has processed it, and TikTok reports a failed upload a little later,
       // so both are followed until they settle. YouTube has the video by now and finishes on its own.
       while (

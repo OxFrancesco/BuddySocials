@@ -35,6 +35,7 @@ import type * as social_linkedinPages from "../social/linkedinPages.js";
 import type * as social_oauth from "../social/oauth.js";
 import type * as social_probe from "../social/probe.js";
 import type * as social_tiktokInbox from "../social/tiktokInbox.js";
+import type * as social_youtubeUpload from "../social/youtubeUpload.js";
 import type * as sync from "../sync.js";
 import type * as validators from "../validators.js";
 
@@ -72,6 +73,7 @@ declare const fullApi: ApiFromModules<{
   "social/oauth": typeof social_oauth;
   "social/probe": typeof social_probe;
   "social/tiktokInbox": typeof social_tiktokInbox;
+  "social/youtubeUpload": typeof social_youtubeUpload;
   sync: typeof sync;
   validators: typeof validators;
 }>;
