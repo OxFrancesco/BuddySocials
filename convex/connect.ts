@@ -57,8 +57,21 @@ export const begin = action({
     /** LinkedIn only: connect the company Pages you administer instead of your profile. */
     pages: v.optional(v.boolean()),
   },
-  handler: async (ctx, args): Promise<string> => {
-    const owner = await requireOwner(ctx);
+  handler: async (ctx, args): Promise<string> => startFor(ctx, await requireOwner(ctx), args),
+});
+
+/** The same as `begin`, for the owner's own scripts run from the Convex CLI, where nobody is signed in. */
+export const beginInternal = internalAction({
+  args: { owner: v.string(), platform: platformValidator, another: v.optional(v.boolean()) },
+  handler: async (ctx, { owner, ...args }): Promise<string> => startFor(ctx, owner, args),
+});
+
+async function startFor(
+  ctx: ActionCtx,
+  owner: string,
+  args: { platform: Platform; another?: boolean; client?: "desktop"; pages?: boolean },
+): Promise<string> {
+  {
     const redirectUri = callbackUri();
     const state = base64url(randomBytes(24));
     const codeVerifier = base64url(randomBytes(48));
@@ -95,8 +108,8 @@ export const begin = action({
       ...(args.client ? { client: args.client } : {}),
     });
     return args.another ? askForAccount(args.platform, started.authorizationUrl) : started.authorizationUrl;
-  },
-});
+  }
+}
 
 /** Stores one account per LinkedIn Page the member may post as, all sharing the member's token. */
 async function completePages(
