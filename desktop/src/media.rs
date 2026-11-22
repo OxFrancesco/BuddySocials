@@ -85,9 +85,22 @@ pub struct Edit {
     knob: u8,
 }
 
+pub struct Cover {
+    pub key: u64,
+    pub storage_id: Option<String>,
+    pub url: Option<String>,
+    pub path: Option<PathBuf>,
+    pub thumb: Pixels,
+    pub size: Option<(u32, u32)>,
+    pub busy: Option<&'static str>,
+    pub error: Option<String>,
+}
+
 pub enum Done {
     /// An image is ready: decoded, and re-encoded when it had to be.
     Ready { key: u64, path: PathBuf, mime: &'static str, base: RgbaImage, upload: bool },
+    /// A cover JPEG is ready to upload.
+    CoverReady { key: u64, path: PathBuf, base: RgbaImage, upload: bool },
     /// A trimmed video was written.
     Clip { key: u64, path: PathBuf },
     Failed { key: u64, message: String },
@@ -297,12 +310,186 @@ pub fn open_saved(s: &mut App, media: &Json) -> Vec<Item> {
 }
 
 /// The fields a draft stores about an attachment, from what the server returned.
-fn record(entry: &Json) -> Json {
+pub(crate) fn record(entry: &Json) -> Json {
     let mut record = json!({ "storageId": entry["storageId"], "kind": entry["kind"], "mimeType": entry["mimeType"], "byteSize": entry["byteSize"] });
     if let Some(name) = entry["filename"].as_str() {
         record["filename"] = json!(name);
     }
     record
+}
+
+pub fn open_saved_cover(s: &mut App, cover: &Json) -> Option<Cover> {
+    let storage_id = cover["storageId"].as_str()?.to_string();
+    s.next_key += 1;
+    let key = s.next_key;
+    let url = cover["url"].as_str().map(str::to_string);
+    let mut out = Cover {
+        key,
+        storage_id: Some(storage_id.clone()),
+        url: url.clone(),
+        path: None,
+        thumb: Pixels::new(),
+        size: None,
+        busy: None,
+        error: None,
+    };
+    if let Some(url) = url {
+        out.busy = Some("Loading");
+        s.send(Cmd::Download { key, url, to: work_dir().join(format!("{storage_id}-cover.jpg")) });
+    }
+    Some(out)
+}
+
+/// Attaches a file that was already uploaded by the Studio MCP bridge (Claude Code).
+pub fn attach_uploaded(s: &mut App, path: PathBuf, uploaded: Json, as_cover: bool) {
+    if s.draft.is_none() {
+        s.draft = Some(DraftEdit::new(None, "", Vec::new()));
+    }
+    if as_cover {
+        s.next_key += 1;
+        let key = s.next_key;
+        let storage_id = uploaded["storageId"].as_str().map(str::to_string);
+        let url = uploaded["url"].as_str().map(str::to_string);
+        let mut cover = Cover {
+            key,
+            storage_id,
+            url,
+            path: Some(path.clone()),
+            thumb: Pixels::new(),
+            size: None,
+            busy: None,
+            error: None,
+        };
+        if let Ok(img) = decode(&path) {
+            let preview = preview_of(&img);
+            cover.size = Some((preview.width(), preview.height()));
+            show(&cover.thumb, &preview);
+        }
+        if let Some(draft) = &mut s.draft {
+            draft.cover = Some(cover);
+            draft.confirming = false;
+        }
+        return;
+    }
+    let kind = if uploaded["kind"] == "video" { Kind::Video } else { Kind::Image };
+    let mime = uploaded["mimeType"].as_str().unwrap_or(if kind == Kind::Video { "video/mp4" } else { "image/jpeg" });
+    let name = uploaded["filename"]
+        .as_str()
+        .or_else(|| path.file_name().and_then(|n| n.to_str()))
+        .unwrap_or("attachment")
+        .to_string();
+    s.next_key += 1;
+    let key = s.next_key;
+    let mut item = blank(key, kind, name, mime);
+    item.path = Some(path.clone());
+    item.url = uploaded["url"].as_str().map(str::to_string);
+    item.saved = Some(record(&uploaded));
+    match kind {
+        Kind::Image => {
+            if let Ok(img) = decode(&path) {
+                let preview = preview_of(&img);
+                show(&item.thumb, &preview);
+                item.base = Some(Arc::new(preview));
+            }
+        }
+        Kind::Video => {
+            let player = Player::file(path);
+            player.preload();
+            item.player = Some(player);
+        }
+    }
+    if let Some(draft) = &mut s.draft {
+        if draft.media.len() < MAX_ITEMS {
+            draft.media.push(item);
+            draft.confirming = false;
+        }
+    }
+}
+
+/// Converts any supported local image into a <= 2 MB JPEG suitable for YouTube thumbnails and Reel covers.
+pub fn prepare_cover_jpeg(path: &Path) -> Result<PathBuf, String> {
+    let mut source = path.to_path_buf();
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    if extension(path) == "heic" || extension(path) == "heif" {
+        source = work_dir().join(format!("bridge-{stamp}-heic.jpg"));
+        let converted = Command::new("/usr/bin/sips").args(["-s", "format", "jpeg"]).arg(path).arg("--out").arg(&source).output();
+        if !converted.is_ok_and(|output| output.status.success()) {
+            return Err("Could not convert cover image. Export it as JPEG.".into());
+        }
+    }
+    let mut image = decode(&source)?;
+    if image.width().max(image.height()) > 1920 {
+        image = image.thumbnail(1920, 1920);
+    }
+    let out = work_dir().join(format!("bridge-{stamp}-cover.jpg"));
+    write_jpeg(&image, &out)?;
+    if std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0) > 2 * 1024 * 1024 {
+        let smaller = image.thumbnail(1280, 1280);
+        write_jpeg(&smaller, &out)?;
+        if std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0) > 2 * 1024 * 1024 {
+            return Err("A cover can be up to 2 MB.".into());
+        }
+    }
+    Ok(out)
+}
+
+fn ingest_cover(key: u64, path: &Path, upload: bool) -> Result<Done, String> {
+    let mut source = path.to_path_buf();
+    if extension(path) == "heic" || extension(path) == "heif" {
+        source = work_dir().join(format!("{key}-cover-heic.jpg"));
+        let converted = Command::new("/usr/bin/sips").args(["-s", "format", "jpeg"]).arg(path).arg("--out").arg(&source).output();
+        if !converted.is_ok_and(|output| output.status.success()) {
+            return Err("Could not convert cover image. Export it as JPEG.".into());
+        }
+    }
+    let mut image = decode(&source)?;
+    if image.width().max(image.height()) > 1920 {
+        image = image.thumbnail(1920, 1920);
+    }
+    let out = work_dir().join(format!("{key}-cover.jpg"));
+    write_jpeg(&image, &out)?;
+    if std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0) > 2 * 1024 * 1024 {
+        let smaller = image.thumbnail(1280, 1280);
+        write_jpeg(&smaller, &out)?;
+        if std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0) > 2 * 1024 * 1024 {
+            return Err("A cover can be up to 2 MB.".into());
+        }
+        return Ok(Done::CoverReady { key, path: out, base: preview_of(&smaller), upload });
+    }
+    Ok(Done::CoverReady { key, path: out, base: preview_of(&image), upload })
+}
+
+pub fn pick_cover(s: &mut App, tx: &mut Tx) {
+    let _ = s;
+    let options = FileDialogOptions { title: "Choose a video cover image".into(), ..Default::default() }
+        .filter("Images", &["jpg", "jpeg", "png", "webp", "heic", "heif"]);
+    tx.open_file(options, |s: &mut App, result, _| match result {
+        Ok(Some(path)) => set_cover_file(s, path),
+        Ok(None) => {}
+        Err(_) => s.notice = Some("The file picker could not open.".into()),
+    });
+}
+
+pub fn set_cover_file(s: &mut App, path: PathBuf) {
+    if s.draft.is_none() {
+        s.draft = Some(DraftEdit::new(None, "", Vec::new()));
+    }
+    s.next_key += 1;
+    let key = s.next_key;
+    if let Some(draft) = &mut s.draft {
+        draft.cover = Some(Cover {
+            key,
+            storage_id: None,
+            url: None,
+            path: Some(path.clone()),
+            thumb: Pixels::new(),
+            size: None,
+            busy: Some("Preparing"),
+            error: None,
+        });
+        draft.confirming = false;
+    }
+    spawn(&s.jobs, key, move || ingest_cover(key, &path, true));
 }
 
 fn item_mut(s: &mut App, key: u64) -> Option<&mut Item> {
@@ -348,7 +535,23 @@ pub fn absorb(s: &mut App) -> bool {
                 let name = item.name.clone();
                 s.send(Cmd::Upload { key, path, mime: "video/mp4".into(), name });
             }
+            Done::CoverReady { key, path, base, upload } => {
+                let Some(cover) = s.draft.as_mut().and_then(|d| d.cover.as_mut()).filter(|c| c.key == key) else { continue };
+                cover.size = Some((base.width(), base.height()));
+                show(&cover.thumb, &base);
+                cover.path = Some(path.clone());
+                cover.error = None;
+                cover.busy = if upload { Some("Uploading") } else { None };
+                if upload {
+                    s.send(Cmd::UploadCover { key, path, mime: "image/jpeg".into(), name: "cover.jpg".into() });
+                }
+            }
             Done::Failed { key, message } => {
+                if let Some(cover) = s.draft.as_mut().and_then(|d| d.cover.as_mut()).filter(|c| c.key == key) {
+                    cover.busy = None;
+                    cover.error = Some(message);
+                    continue;
+                }
                 let Some(item) = item_mut(s, key) else { continue };
                 item.busy = None;
                 item.error = Some(message);
@@ -370,8 +573,31 @@ pub fn uploaded(s: &mut App, key: u64, result: Result<Json, String>) {
     }
 }
 
+pub fn cover_uploaded(s: &mut App, key: u64, result: Result<Json, String>) {
+    let Some(cover) = s.draft.as_mut().and_then(|d| d.cover.as_mut()).filter(|c| c.key == key) else { return };
+    cover.busy = None;
+    match result {
+        Ok(entry) => {
+            cover.storage_id = entry["storageId"].as_str().map(str::to_string);
+            cover.url = entry["url"].as_str().map(str::to_string);
+            cover.error = None;
+        }
+        Err(message) => cover.error = Some(message),
+    }
+}
+
 pub fn downloaded(s: &mut App, key: u64, result: Result<PathBuf, String>) {
     let jobs = s.jobs.clone();
+    if let Some(cover) = s.draft.as_mut().and_then(|d| d.cover.as_mut()).filter(|c| c.key == key) {
+        match result {
+            Ok(path) => spawn(&jobs, key, move || ingest_cover(key, &path, false)),
+            Err(message) => {
+                cover.busy = None;
+                cover.error = Some(message);
+            }
+        }
+        return;
+    }
     let Some(item) = item_mut(s, key) else { return };
     match result {
         Ok(path) => {
@@ -395,9 +621,10 @@ pub fn records(draft: &DraftEdit) -> Option<Vec<Json>> {
     draft.media.iter().map(|item| item.saved.clone()).collect()
 }
 
-/// True while an attachment is uploading, loading or being edited.
+/// True while an attachment or cover is uploading, loading or being edited.
 pub fn working(draft: &DraftEdit) -> bool {
     draft.media.iter().any(|item| item.busy.is_some() || item.saved.is_none())
+        || draft.cover.as_ref().is_some_and(|cover| cover.busy.is_some() || cover.storage_id.is_none())
 }
 
 // ---------------------------------------------------------------- editing
@@ -652,13 +879,46 @@ pub fn strip(draft: &DraftEdit) -> El {
             block = block.child(text(format!("{}: {error}", item.name)).font(theme::mono(13.0)).color(theme::coral()).wrap());
         }
     }
-    let mut adder = row().gap(12.0).center_y();
+    let mut adder = row().gap(12.0).center_y().flex_wrap();
     if draft.media.len() < MAX_ITEMS {
         adder = adder
             .child(ui::button("media-add", "Add image or video", ui::Kind::Outline).on_press_tx(pick))
             .child(text(if draft.drop_over { "Drop to attach" } else { "or drop files here, or paste an image" }).font(theme::mono(12.0)).color(if draft.drop_over { theme::coral() } else { theme::FAINT }));
     }
-    block.child(adder)
+    let has_video = draft.media.iter().any(|item| item.kind == Kind::Video);
+    let block = block.child(adder);
+    if has_video { block.child(cover_strip(draft)) } else { block }
+}
+
+/// Video cover picker & preview (becomes the YouTube thumbnail and Instagram Reel cover).
+pub fn cover_strip(draft: &DraftEdit) -> El {
+    let mut strip = row().key("cover-strip").gap(12.0).center_y().flex_wrap();
+    if let Some(cover) = &draft.cover {
+        let mut frame = el().size(56.0, 56.0).fill(theme::FG.alpha(0.08)).border(2.0, if cover.error.is_some() { theme::coral() } else { theme::line() });
+        if cover.size.is_some() {
+            frame = frame.pixels_fit(&cover.thumb, SurfaceFit::Fill);
+        }
+        let status = match (&cover.error, cover.busy) {
+            (Some(err), _) => err.clone(),
+            (None, Some(busy)) => format!("{busy}…"),
+            (None, None) => "Video cover (YouTube thumbnail & Reel cover)".into(),
+        };
+        strip = strip
+            .child(frame)
+            .child(text(status).font(theme::mono(12.0)).color(if cover.error.is_some() { theme::coral() } else { theme::DIM }))
+            .child(ui::button("cover-change", "Change cover", ui::Kind::Outline).on_press_tx(pick_cover))
+            .child(ui::button("cover-remove", "Remove", ui::Kind::Ghost).on_press(|s: &mut App| {
+                if let Some(draft) = &mut s.draft {
+                    draft.cover = None;
+                    draft.confirming = false;
+                }
+            }));
+    } else {
+        strip = strip
+            .child(ui::button("cover-add", "Add video cover", ui::Kind::Outline).on_press_tx(pick_cover))
+            .child(text("Optional JPEG thumbnail for YouTube & Instagram Reel").font(theme::mono(12.0)).color(theme::FAINT));
+    }
+    strip
 }
 
 fn small(key: String, label: &str) -> El {

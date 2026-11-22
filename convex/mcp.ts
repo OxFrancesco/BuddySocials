@@ -1,12 +1,16 @@
 import { createRemoteJWKSet, jwtVerify } from "jose";
+import { YOUTUBE_VISIBILITIES, type YoutubeVisibility } from "../shared/drafts";
+import { isPlatform, type Platform } from "../shared/platforms";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { httpAction, type ActionCtx } from "./_generated/server";
 
 /**
  * A stateless MCP server over HTTP: every request carries a WorkOS AuthKit access
- * token and gets one JSON answer, so there are no sessions to keep. It can list
- * accounts and drafts, save and delete drafts, and publish.
+ * token and gets one JSON answer, so there are no sessions to keep. It can read
+ * accounts, posts, comments, overview metrics, and drafts; create/edit/schedule
+ * drafts (including per-platform copy, media, covers, and YouTube visibility);
+ * update uploaded YouTube videos; and publish directly.
  *
  * Set WORKOS_AUTHKIT_DOMAIN on the deployment (for example `your-app.authkit.app`).
  * The token's verified email decides whose data is used: it must belong to someone
@@ -104,7 +108,8 @@ async function ownerFor(ctx: ActionCtx, request: Request): Promise<string | Resp
 
 /** What each platform does differently when a post goes out, for whoever is choosing where to post. */
 const PLATFORM_NOTES =
-  "Instagram needs an image or a video (JPEG images). YouTube takes one MP4 video, uploaded unlisted with the text's first line as its title. " +
+  "Use platform_text to tailor copy per platform (e.g. <=280 chars for x, longer for linkedin/instagram/youtube). " +
+  "Instagram needs an image or a video (JPEG images). YouTube takes one MP4 video; set title (or first line of text) and youtube_visibility (public, unlisted, or private; default unlisted). " +
   "TikTok takes one MP4 video and sends it to the TikTok app's inbox, where the caption and privacy are set before posting.";
 
 const accountIds = { type: "array", items: { type: "string" }, description: "Account IDs from list_accounts." };
@@ -121,27 +126,59 @@ const coverId = {
     "A JPEG up to 2 MB to show before the video plays, as a media ID. It becomes the YouTube thumbnail and the Instagram Reel cover; TikTok's cover is chosen in the TikTok app. Null takes the cover off; omit it to leave it as it is. Setting it on a draft already on YouTube changes that video's thumbnail.",
 };
 
+const titleProp = {
+  type: ["string", "null"],
+  description: "Optional working title and YouTube video title (up to 100 chars for YouTube). Null clears it; omit to leave unchanged.",
+};
+
+const platformTextProp = {
+  type: ["object", "null"],
+  additionalProperties: { type: "string" },
+  description:
+    "Optional per-platform copy overrides keyed by platform name (x, linkedin, instagram, tiktok, youtube). Platforms omitted fall back to text. Null clears all overrides.",
+};
+
+const youtubeVisibilityProp = {
+  type: ["string", "null"],
+  enum: ["public", "unlisted", "private", null],
+  description: "YouTube upload visibility (default unlisted). Null resets to default.",
+};
+
+const scheduledForProp = {
+  type: ["string", "number", "null"],
+  description: "Optional future ISO-8601 timestamp (e.g. '2026-11-23T15:00:00Z') or Unix ms to auto-publish this draft. Null cancels a schedule.",
+};
+
 const TOOLS = [
   {
     name: "list_accounts",
-    description: "The connected social accounts, with the ID to post to and whether posting works for each.",
+    description: "The connected social accounts, with the ID to post to, whether posting works, and any issues (such as reconnect needed).",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
     name: "list_drafts",
-    description: "Saved drafts, newest first: text, target accounts, anything stopping a publish, and what happened on each platform.",
+    description: "Saved drafts, newest first: title, core text, per-platform overrides, schedule, target accounts, anything stopping a publish, and delivery state on each platform.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
+    name: "get_draft",
+    description: "Returns full details of one draft by draft_id.",
+    inputSchema: { type: "object", properties: { draft_id: { type: "string" } }, required: ["draft_id"], additionalProperties: false },
+  },
+  {
     name: "save_draft",
-    description: "Creates a draft, or updates one when draft_id is given. Nothing is posted.",
+    description: `Creates a draft, or updates one when draft_id is given. Optionally schedules it with scheduled_for. Nothing is posted immediately. ${PLATFORM_NOTES}`,
     inputSchema: {
       type: "object",
       properties: {
+        title: titleProp,
         text: { type: "string" },
+        platform_text: platformTextProp,
+        youtube_visibility: youtubeVisibilityProp,
         account_ids: accountIds,
         media_ids: mediaIds,
         cover_id: coverId,
+        scheduled_for: scheduledForProp,
         draft_id: { type: "string", description: "Omit to create a new draft." },
       },
       required: ["text", "account_ids"],
@@ -150,21 +187,102 @@ const TOOLS = [
   },
   {
     name: "delete_draft",
-    description: "Deletes a draft. Posts already published stay on their platforms.",
+    description: "Deletes a draft (and cancels any pending schedule). Posts already published stay on their platforms.",
     inputSchema: { type: "object", properties: { draft_id: { type: "string" } }, required: ["draft_id"], additionalProperties: false },
+  },
+  {
+    name: "schedule_draft",
+    description: "Schedules a saved draft to publish automatically at a future time, or cancels its schedule when scheduled_for is null.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        draft_id: { type: "string" },
+        scheduled_for: scheduledForProp,
+      },
+      required: ["draft_id", "scheduled_for"],
+      additionalProperties: false,
+    },
   },
   {
     name: "publish_draft",
-    description: `Posts a saved draft to every target account it hasn't reached yet. This is public and cannot be undone here. ${PLATFORM_NOTES}`,
-    inputSchema: { type: "object", properties: { draft_id: { type: "string" } }, required: ["draft_id"], additionalProperties: false },
+    description: `Posts a saved draft to every target account it hasn't reached yet (or only account_ids when supplied). This is public and cannot be undone here. ${PLATFORM_NOTES}`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        draft_id: { type: "string" },
+        account_ids: { ...accountIds, description: "Optional subset of target account IDs to publish or retry." },
+      },
+      required: ["draft_id"],
+      additionalProperties: false,
+    },
   },
   {
     name: "publish_post",
-    description: `Posts text to the given accounts right away. This is public and cannot be undone here. Use save_draft to keep it for later. ${PLATFORM_NOTES}`,
+    description: `Posts immediately to the given accounts. This is public and cannot be undone here. Use save_draft to keep it for later or schedule_draft to publish later. ${PLATFORM_NOTES}`,
     inputSchema: {
       type: "object",
-      properties: { text: { type: "string" }, account_ids: accountIds, media_ids: mediaIds, cover_id: coverId },
+      properties: {
+        title: titleProp,
+        text: { type: "string" },
+        platform_text: platformTextProp,
+        youtube_visibility: youtubeVisibilityProp,
+        account_ids: accountIds,
+        media_ids: mediaIds,
+        cover_id: coverId,
+      },
       required: ["text", "account_ids"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "update_youtube_video",
+    description: "Changes an already-uploaded YouTube video's visibility (public, unlisted, private), title, or description.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        account_id: { type: "string", description: "YouTube account ID from list_accounts." },
+        video_id: { type: "string", description: "YouTube video ID (platformPostId from list_drafts or list_posts)." },
+        visibility: { type: "string", enum: ["public", "unlisted", "private"] },
+        title: { type: "string" },
+        description: { type: "string" },
+      },
+      required: ["account_id", "video_id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "list_posts",
+    description: "Lists recent published posts with views, likes, comments, shares, and text so you can match the creator's style and see what performs well.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        platform: { type: "string", enum: ["youtube", "instagram", "tiktok", "x", "linkedin"] },
+        limit: { type: "number", description: "1 to 50 (default 20)." },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "list_comments",
+    description: "Lists recent audience comments across posts (defaults to open/unreplied comments).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        open_only: { type: "boolean", description: "Default true." },
+        platform: { type: "string", enum: ["youtube", "instagram", "tiktok", "x", "linkedin"] },
+        limit: { type: "number", description: "1 to 50 (default 25)." },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "get_overview",
+    description: "Returns daily performance counters across platforms for the last N days (default 7).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        days: { type: "number", description: "1 to 90 (default 7)." },
+      },
       additionalProperties: false,
     },
   },
@@ -190,6 +308,53 @@ const TOOLS = [
 function text(value: unknown): string {
   if (typeof value !== "string") throw new Error("text must be a string.");
   return value;
+}
+
+function optionalTitle(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== "string") throw new Error("title must be a string or null.");
+  return value;
+}
+
+function optionalPlatformText(value: unknown): Record<string, string> | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== "object" || Array.isArray(value)) throw new Error("platform_text must be an object mapping platform names to text.");
+  const result: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (!isPlatform(key)) throw new Error(`Unknown platform in platform_text: ${key}.`);
+    if (typeof entry !== "string") throw new Error(`platform_text.${key} must be a string.`);
+    result[key] = entry;
+  }
+  return result;
+}
+
+function optionalYoutubeVisibility(value: unknown): YoutubeVisibility | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== "string" || !(YOUTUBE_VISIBILITIES as readonly string[]).includes(value)) {
+    throw new Error("youtube_visibility must be public, unlisted, or private.");
+  }
+  return value as YoutubeVisibility;
+}
+
+function optionalPlatform(value: unknown): Platform | undefined {
+  if (value === undefined) return undefined;
+  if (!isPlatform(value)) throw new Error("platform must be youtube, instagram, tiktok, x, or linkedin.");
+  return value;
+}
+
+function parseTimestamp(value: unknown): number | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    if (!Number.isFinite(parsed)) throw new Error("scheduled_for must be a valid ISO-8601 timestamp or Unix milliseconds.");
+    return parsed;
+  }
+  throw new Error("scheduled_for must be an ISO-8601 timestamp, Unix milliseconds, or null.");
 }
 
 function ids(value: unknown): Id<"accounts">[] {
@@ -231,36 +396,117 @@ async function callTool(ctx: ActionCtx, owner: string, name: string, args: Recor
       return await ctx.runQuery(internal.drafts.accountsInternal, { owner });
     case "list_drafts":
       return await ctx.runQuery(internal.drafts.listInternal, { owner });
+    case "get_draft": {
+      const found = await ctx.runQuery(internal.drafts.getInternal, { owner, draftId: draftId(args["draft_id"]) });
+      if (found === null) throw new Error("Draft not found.");
+      return found;
+    }
     case "save_draft": {
       const attached = await media(ctx, owner, args["media_ids"]);
+      const title = optionalTitle(args["title"]);
+      const platformText = optionalPlatformText(args["platform_text"]);
+      const youtubeVisibility = optionalYoutubeVisibility(args["youtube_visibility"]);
+      const scheduledFor = parseTimestamp(args["scheduled_for"]);
       const id = await ctx.runMutation(internal.drafts.saveInternal, {
         owner,
+        ...(title !== undefined ? { title } : {}),
         text: text(args["text"]),
+        ...(platformText !== undefined ? { platformText } : {}),
+        ...(youtubeVisibility !== undefined ? { youtubeVisibility } : {}),
         accountIds: ids(args["account_ids"]),
         ...(attached ? { mediaIds: attached } : {}),
         ...(await cover(ctx, owner, args["cover_id"])),
         ...(args["draft_id"] !== undefined ? { draftId: draftId(args["draft_id"]) } : {}),
       });
-      return { draft_id: id };
+      if (scheduledFor === null) {
+        await ctx.runMutation(internal.drafts.cancelScheduleInternal, { owner, draftId: id });
+      } else if (scheduledFor !== undefined) {
+        await ctx.runMutation(internal.drafts.scheduleInternal, { owner, draftId: id, at: scheduledFor });
+      }
+      return { draft_id: id, ...(scheduledFor !== undefined ? { scheduled_for: scheduledFor } : {}) };
     }
     case "delete_draft":
       await ctx.runMutation(internal.drafts.removeInternal, { owner, draftId: draftId(args["draft_id"]) });
       return { deleted: true };
+    case "schedule_draft": {
+      const id = draftId(args["draft_id"]);
+      const at = parseTimestamp(args["scheduled_for"]);
+      if (at === undefined) throw new Error("scheduled_for is required (ISO-8601 timestamp, Unix ms, or null to cancel).");
+      if (at === null) {
+        await ctx.runMutation(internal.drafts.cancelScheduleInternal, { owner, draftId: id });
+        return { draft_id: id, scheduled_for: null };
+      }
+      await ctx.runMutation(internal.drafts.scheduleInternal, { owner, draftId: id, at });
+      return { draft_id: id, scheduled_for: at, scheduled_iso: new Date(at).toISOString() };
+    }
     case "publish_draft": {
-      const queued = await ctx.runMutation(internal.drafts.publishInternal, { owner, draftId: draftId(args["draft_id"]) });
-      return { queued, note: "Publishing runs in the background. Call list_drafts to see the result on each platform." };
+      const only = args["account_ids"] !== undefined ? ids(args["account_ids"]) : undefined;
+      const queued = await ctx.runMutation(internal.drafts.publishInternal, {
+        owner,
+        draftId: draftId(args["draft_id"]),
+        ...(only ? { accountIds: only } : {}),
+      });
+      return { queued, note: "Publishing runs in the background. Call list_drafts or get_draft to see the result on each platform." };
     }
     case "publish_post": {
       const attached = await media(ctx, owner, args["media_ids"]);
+      const title = optionalTitle(args["title"]);
+      const platformText = optionalPlatformText(args["platform_text"]);
+      const youtubeVisibility = optionalYoutubeVisibility(args["youtube_visibility"]);
       const id = await ctx.runMutation(internal.drafts.saveInternal, {
         owner,
+        ...(title !== undefined ? { title } : {}),
         text: text(args["text"]),
+        ...(platformText !== undefined ? { platformText } : {}),
+        ...(youtubeVisibility !== undefined ? { youtubeVisibility } : {}),
         accountIds: ids(args["account_ids"]),
         ...(attached ? { mediaIds: attached } : {}),
         ...(await cover(ctx, owner, args["cover_id"])),
       });
       const queued = await ctx.runMutation(internal.drafts.publishInternal, { owner, draftId: id });
-      return { draft_id: id, queued, note: "Publishing runs in the background. Call list_drafts to see the result on each platform." };
+      return { draft_id: id, queued, note: "Publishing runs in the background. Call list_drafts or get_draft to see the result on each platform." };
+    }
+    case "update_youtube_video": {
+      if (typeof args["account_id"] !== "string" || !args["account_id"]) throw new Error("account_id is required.");
+      if (typeof args["video_id"] !== "string" || !args["video_id"]) throw new Error("video_id is required.");
+      const accounts = await ctx.runQuery(internal.drafts.accountsInternal, { owner });
+      const owned = accounts.find((entry) => entry.accountId === args["account_id"] && entry.platform === "youtube");
+      if (!owned) throw new Error("YouTube account not found.");
+      const visibility = optionalYoutubeVisibility(args["visibility"]);
+      const error = await ctx.runAction(internal.publish.updateYouTube, {
+        accountId: args["account_id"] as Id<"accounts">,
+        videoId: args["video_id"],
+        ...(visibility ? { visibility } : {}),
+        ...(typeof args["title"] === "string" ? { title: args["title"] } : {}),
+        ...(typeof args["description"] === "string" ? { description: args["description"] } : {}),
+      });
+      if (error !== null) throw new Error(error);
+      return { updated: true, video_id: args["video_id"] };
+    }
+    case "list_posts": {
+      const platform = optionalPlatform(args["platform"]);
+      const limit = typeof args["limit"] === "number" ? args["limit"] : 20;
+      return await ctx.runQuery(internal.dashboard.recentPostsInternal, {
+        owner,
+        ...(platform ? { platform } : {}),
+        limit,
+      });
+    }
+    case "list_comments": {
+      const platform = optionalPlatform(args["platform"]);
+      const open = args["open_only"] === undefined ? true : Boolean(args["open_only"]);
+      const limit = typeof args["limit"] === "number" ? args["limit"] : 25;
+      return await ctx.runQuery(internal.comments.listInternal, {
+        owner,
+        open,
+        ...(platform ? { platform } : {}),
+        limit,
+      });
+    }
+    case "get_overview": {
+      const days = typeof args["days"] === "number" ? args["days"] : 7;
+      const today = new Date().toISOString().slice(0, 10);
+      return await ctx.runQuery(internal.dashboard.overviewInternal, { owner, today, days });
     }
     case "add_media_from_url": {
       if (typeof args["url"] !== "string") throw new Error("url is required.");
@@ -306,7 +552,7 @@ async function answer(ctx: ActionCtx, owner: string, message: RpcRequest): Promi
         result: {
           protocolVersion: PROTOCOL_VERSIONS.includes(asked) ? asked : PROTOCOL_VERSIONS[0],
           capabilities: { tools: {} },
-          serverInfo: { name: "buddysocials", version: "1.0.0" },
+          serverInfo: { name: "buddysocials", version: "1.1.0" },
         },
       };
     }

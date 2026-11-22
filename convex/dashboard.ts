@@ -1,7 +1,7 @@
 import { paginationOptsValidator } from "convex/server";
 import { v } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
-import { query, type QueryCtx } from "./_generated/server";
+import { internalQuery, query, type QueryCtx } from "./_generated/server";
 import { optionalOwner } from "./lib/owner";
 import { metricValidator, platformValidator } from "./validators";
 import { addDays } from "../shared/format";
@@ -223,5 +223,35 @@ export const post = query({
         likes: snapshot.likes ?? null,
       })),
     };
+  },
+});
+
+/** Recent published posts for MCP / Studio AI context. */
+export const recentPostsInternal = internalQuery({
+  args: { owner: v.string(), platform: v.optional(platformValidator), limit: v.optional(v.number()) },
+  handler: async (ctx, args) => {
+    const limit = Math.min(Math.max(Math.round(args.limit ?? 20), 1), 50);
+    const platform = args.platform;
+    const rows =
+      platform === undefined
+        ? await ctx.db
+            .query("posts")
+            .withIndex("by_owner_and_publishedAt", (q) => q.eq("owner", args.owner))
+            .order("desc")
+            .take(limit)
+        : await ctx.db
+            .query("posts")
+            .withIndex("by_owner_and_platform_and_publishedAt", (q) => q.eq("owner", args.owner).eq("platform", platform))
+            .order("desc")
+            .take(limit);
+    return rows.map(postSummary);
+  },
+});
+
+export const overviewInternal = internalQuery({
+  args: { owner: v.string(), today: v.string(), days: v.number() },
+  handler: async (ctx, args) => {
+    const length = Math.min(Math.max(Math.round(args.days), 1), 90);
+    return await loadOverview(ctx, args.owner, args.today, length);
   },
 });

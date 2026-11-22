@@ -12,7 +12,7 @@ path = "src/main.rs"
 # Rune is pre-release: pinned to a commit of its `dev` branch.
 rune = { git = "https://github.com/anomalyco/rune", rev = "bba30a61cfcec6683e3fdedf156a92dae89d8b04", features = ["native-file-dialog"] }
 convex = { version = "0.10", default-features = false, features = ["rustls-tls-native-roots"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "fs"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "fs", "process"] }
 futures = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json", "stream"] }
 serde = { version = "1", features = ["derive"] }

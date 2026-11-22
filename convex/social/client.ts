@@ -25,7 +25,7 @@ const LINKEDIN_API_VERSION = "202610";
 
 /** Adds a cover to the Reel the adapter is about to make: the SDK has no setting for it. */
 function withReelCover(coverUrl: string): typeof fetch {
-  return async (input, init) => {
+  return (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
     if (init?.method === "POST" && typeof init.body === "string") {
       try {
         const body = JSON.parse(init.body) as Record<string, unknown>;
@@ -35,7 +35,7 @@ function withReelCover(coverUrl: string): typeof fetch {
       }
     }
     return await fetch(input, init);
-  };
+  }) as typeof fetch;
 }
 
 export function adapterFor(

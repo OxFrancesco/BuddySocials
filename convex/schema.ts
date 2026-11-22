@@ -153,7 +153,13 @@ export default defineSchema({
   /** A post written once and published later to one or more connected accounts. */
   drafts: defineTable({
     owner: v.string(),
+    /** Optional working title; also used as the YouTube video title when set. */
+    title: v.optional(v.string()),
     text: v.string(),
+    /** Optional per-platform copy overrides keyed by platform name (x, linkedin, instagram, tiktok, youtube). */
+    platformText: v.optional(v.record(v.string(), v.string())),
+    /** YouTube upload privacy status; defaults to unlisted when omitted. */
+    youtubeVisibility: v.optional(v.union(v.literal("public"), v.literal("unlisted"), v.literal("private"))),
     media: v.array(
       v.object({
         storageId: v.id("_storage"),
@@ -167,6 +173,11 @@ export default defineSchema({
     cover: v.optional(v.object({ storageId: v.id("_storage"), mimeType: v.string(), byteSize: v.number() })),
     /** The accounts this draft goes to. */
     accountIds: v.array(v.id("accounts")),
+    /** UTC ms when the draft is scheduled to publish automatically. */
+    scheduledFor: v.optional(v.number()),
+    scheduledJobId: v.optional(v.id("_scheduled_functions")),
+    /** Optional linked Claude Code session ID from the desktop Studio. */
+    claudeSessionId: v.optional(v.string()),
     createdAt: v.number(),
     updatedAt: v.number(),
   }).index("by_owner_and_updatedAt", ["owner", "updatedAt"]),

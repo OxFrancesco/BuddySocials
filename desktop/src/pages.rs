@@ -4,7 +4,7 @@ use rune::{El, col, el, row, text, text_input};
 use serde_json::{Value as Json, json};
 
 use crate::backend::{AuthState, Cmd};
-use crate::{App, DraftEdit, fmt, home, media, preview, theme, ui};
+use crate::{App, DraftEdit, Tab, fmt, home, media, preview, theme, ui};
 
 pub(crate) fn open(url: String) -> impl Fn(&mut App, &mut rune::Tx) {
     move |s, tx| {
@@ -25,15 +25,6 @@ fn platform_chips(prefix: &str, current: &str, set: fn(&mut App, String)) -> El 
     chips
 }
 
-/// The longest post each platform takes, to show a count while writing. The server decides what can be sent.
-fn text_limit(platform: &str) -> Option<usize> {
-    match platform {
-        "x" => Some(280),
-        "linkedin" => Some(3000),
-        _ => None,
-    }
-}
-
 fn view_switch(s: &App) -> El {
     row()
         .gap(8.0)
@@ -42,130 +33,20 @@ fn view_switch(s: &App) -> El {
 }
 
 pub fn draft_json(edit: &DraftEdit) -> Json {
-    let mut draft = json!({ "text": edit.text.text.clone(), "accountIds": edit.accounts });
-    if let Some(id) = &edit.id {
-        draft["draftId"] = json!(id);
-    }
-    if let Some(records) = media::records(edit) {
-        draft["media"] = json!(records);
-    }
-    draft
-}
-
-fn draft_editor(s: &App, edit: &DraftEdit) -> El {
-    let length = edit.text.text.trim().chars().count();
-    let saved = edit.id.as_ref().and_then(|id| {
-        s.query("drafts:list", json!({})).and_then(Json::as_array).and_then(|drafts| drafts.iter().find(|draft| draft["_id"] == id.as_str()))
-    });
-    let mut accounts = row().gap(8.0).flex_wrap();
-    let mut counts: Vec<(String, bool)> = Vec::new();
-    for account in s.accounts() {
-        let id = account["_id"].as_str().unwrap_or("").to_string();
-        let platform = account["platform"].as_str().unwrap_or("");
-        let chosen = edit.accounts.contains(&id);
-        if chosen {
-            if let Some(limit) = text_limit(platform) {
-                counts.push((format!("{} {length} / {limit}", theme::platform_label(platform)), length > limit));
-            }
-        }
-        let label = format!("{} · {}", theme::platform_label(platform), account["handle"].as_str().unwrap_or(""));
-        let toggle = id.clone();
-        accounts = accounts.child(ui::chip(format!("draft-account-{id}"), &label, chosen).on_press(move |s: &mut App| {
-            let Some(edit) = &mut s.draft else { return };
-            if let Some(at) = edit.accounts.iter().position(|entry| *entry == toggle) {
-                edit.accounts.remove(at);
-            } else {
-                edit.accounts.push(toggle.clone());
-            }
-            edit.confirming = false;
-        }));
-    }
-    let frame = col().key("draft-editor").mx(24.0).mb(24.0).padding(16.0).gap(14.0).border(2.0, if edit.drop_over { theme::coral() } else { theme::FG });
-    // Cropping or trimming takes the whole panel, so the picture gets the room.
-    if let Some(editing) = &edit.editing {
-        return frame.child(media::editor(editing));
-    }
-    let mut editor = frame
-        .child(
-            col().min_h(120.0).child(
-                text_input(&edit.text, theme::mono(15.0))
-                    .key("draft-text")
-                    .w_full()
-                    .color(theme::FG)
-                    .caret(theme::coral(), theme::coral().alpha(0.4))
-                    .placeholder("What do you want to post?", theme::FAINT)
-                    .on_input_paste(|s: &mut App, content, _| media::paste(s, content))
-                    .on_edit(|s: &mut App| &mut s.draft.as_mut().expect("the editor is open").text),
-            ),
-        )
-        .child(media::strip(edit))
-        .child(accounts);
-    if !counts.is_empty() {
-        let mut line = row().gap(16.0);
-        for (label, over) in counts {
-            line = line.child(text(label.to_uppercase()).font(theme::label(10.0)).color(if over { theme::coral() } else { theme::DIM }));
-        }
-        editor = editor.child(line);
-    }
-    // What the server said about the saved draft: why a target can't post, or how each post went.
-    for target in saved.and_then(|draft| draft["targets"].as_array()).into_iter().flatten() {
-        let who = format!("{} · {}", theme::platform_label(target["platform"].as_str().unwrap_or("")), target["handle"].as_str().unwrap_or(""));
-        let (note, alert) = match target["state"].as_str() {
-            Some("published") => ("Published".to_string(), false),
-            Some("queued") | Some("sending") => ("Publishing".to_string(), false),
-            Some("failed") => (target["error"].as_str().unwrap_or("Not sent").to_string(), true),
-            _ => match target["issues"].as_array().and_then(|issues| issues.first()).and_then(Json::as_str) {
-                Some(issue) => (issue.to_string(), true),
-                None => continue,
-            },
-        };
-        let mut line = row().gap(12.0).center_y().child(text(format!("{who}: {note}")).font(theme::mono(13.0)).color(if alert { theme::coral() } else { theme::FG }).wrap().grow(1.0));
-        if let Some(url) = target["permalink"].as_str() {
-            line = line.child(ui::button(format!("open-{}", target["accountId"].as_str().unwrap_or("")), "Open", ui::Kind::Ghost).on_press_tx(open(url.to_string())));
-        }
-        editor = editor.child(line);
-    }
-    // Nothing is saved or sent while a file is still on its way up, so a draft never loses an attachment.
-    let settled = !media::working(edit);
-    let can_send = settled && !edit.accounts.is_empty() && (length > 0 || !edit.media.is_empty());
-    let mut actions = row().gap(8.0).center_y();
-    if settled {
-        actions = actions.child(ui::button("draft-save", "Save", ui::Kind::Outline).on_press(|s: &mut App| {
-            let Some(edit) = s.draft.take() else { return };
-            s.mutate("drafts:save", draft_json(&edit));
-        }));
-    } else {
-        actions = actions.child(text("FINISHING ATTACHMENTS").key("draft-waiting").font(theme::label(10.0)).color(theme::DIM));
-    }
-    if can_send {
-        actions = actions.child(
-            ui::button("draft-publish", if edit.confirming { "Post it now" } else { "Publish" }, ui::Kind::Primary).on_press(|s: &mut App| {
-                let Some(edit) = &mut s.draft else { return };
-                if !edit.confirming {
-                    edit.confirming = true;
-                    return;
-                }
-                let draft = draft_json(edit);
-                s.draft = None;
-                s.send(Cmd::PublishDraft { draft });
-            }),
-        );
-    }
-    actions = actions.child(ui::button("draft-close", "Close", ui::Kind::Ghost).on_press(|s: &mut App| s.draft = None));
-    if let Some(id) = edit.id.clone() {
-        actions = actions.child(col().grow(1.0)).child(ui::button("draft-delete", "Delete", ui::Kind::Ghost).on_press(move |s: &mut App| {
-            s.mutate("drafts:remove", json!({ "draftId": id }));
-            s.draft = None;
-        }));
-    }
-    editor.child(actions)
+    edit.to_save_json()
 }
 
 fn drafts(s: &App) -> El {
-    let bar = row().gap(8.0).center_y().child(view_switch(s)).child(col().grow(1.0)).child(ui::button("new-draft", "New draft", ui::Kind::Primary).on_press(|s: &mut App| {
-        s.draft = Some(DraftEdit::new(None, "", Vec::new()));
-    }));
-    // Files dropped anywhere on the page land on the open draft, or start one.
+    let bar = row()
+        .gap(8.0)
+        .center_y()
+        .child(view_switch(s))
+        .child(col().grow(1.0))
+        .child(ui::button("new-draft", "New in Studio", ui::Kind::Primary).on_press(|s: &mut App| {
+            crate::studio::new_draft(s);
+            s.tab = Tab::Studio;
+        }));
+    // Files dropped anywhere on Drafts open straight in Studio with the attachment ready.
     let mut content = col()
         .pb(32.0)
         .on_drop_files(|s: &mut App, files, _| {
@@ -173,19 +54,22 @@ fn drafts(s: &App) -> El {
             if let Some(draft) = &mut s.draft {
                 draft.drop_over = false;
             }
+            s.tab = Tab::Studio;
         })
-        .accepts_extensions(&media::EXTENSIONS)
-        .on_drop_hover(|s: &mut App, over, _| {
-            if let Some(draft) = &mut s.draft {
-                draft.drop_over = over;
-            }
-        });
-    if let Some(edit) = &s.draft {
-        content = content.child(draft_editor(s, edit));
-    }
+        .accepts_extensions(&media::EXTENSIONS);
     let Some(drafts) = s.query("drafts:list", json!({})).and_then(Json::as_array) else { return ui::page("drafts", Some(bar), content) };
-    if drafts.is_empty() && s.draft.is_none() {
-        content = content.child(col().px(24.0).child(ui::empty("No drafts yet.")));
+    if drafts.is_empty() {
+        content = content.child(
+            col()
+                .px(24.0)
+                .gap(12.0)
+                .items_start()
+                .child(ui::empty("No drafts yet."))
+                .child(ui::button("empty-open-studio", "Open Studio", ui::Kind::Primary).on_press(|s: &mut App| {
+                    crate::studio::new_draft(s);
+                    s.tab = Tab::Studio;
+                })),
+        );
     }
     ui::page("drafts", Some(bar), content.child(preview::gallery(s, drafts)).child(cleanup(s)))
 }

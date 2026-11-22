@@ -25,6 +25,7 @@
   "exclude": [
     "resources",
     "node_modules",
-    "convex"
+    "convex",
+    "videos"
   ]
 }

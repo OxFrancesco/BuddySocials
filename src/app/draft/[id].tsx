@@ -1,4 +1,4 @@
-import { useConvex, useMutation, useQuery } from "convex/react";
+import { useAction, useConvex, useMutation, useQuery } from "convex/react";
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
 import * as Linking from "expo-linking";
@@ -10,15 +10,23 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
 import {
+  MAX_COVER_BYTES,
   MAX_DRAFT_MEDIA,
   MAX_DRAFT_TEXT,
   MAX_IMAGE_BYTES,
   MAX_VIDEO_BYTES,
   TEXT_LIMIT,
+  YOUTUBE_TITLE_LIMIT,
+  YOUTUBE_VISIBILITIES,
+  YOUTUBE_VISIBILITY,
   postingIssues,
+  textForPlatform,
+  youtubeTitle,
   type DraftMediaInfo,
   type DraftMediaKind,
+  type YoutubeVisibility,
 } from "@shared/drafts";
+import { PLATFORM_LABEL, type Platform } from "@shared/platforms";
 import { NO_EDIT, downloadImage, formatDuration, isEdited, renderImage, sizeOf, uploadFile, type ImageEdit, type LocalImage } from "@/lib/media";
 import { Button } from "@/ui/button";
 import { MediaEditor } from "@/ui/media-editor";
@@ -43,25 +51,26 @@ type Tile = {
   key: string;
   kind: DraftMediaKind;
   state: "uploading" | "failed" | "ready";
-  /** What the thumbnail shows: the local file until only the saved copy's link is known. */
   preview: string | null;
-  /** Upload progress from 0 to 1. */
   progress: number;
   duration: number | null;
-  /** Kept so a failed upload can be tried again. */
   picked?: Picked;
   media?: Media;
-  /** The unedited image, so every edit starts from it instead of stacking on the last one. */
   original?: LocalImage;
   edit: ImageEdit;
 };
 
+type CoverState = {
+  storageId: Id<"_storage">;
+  preview: string | null;
+};
+
+type CopyTab = "core" | Platform;
+
 const THUMB = 88;
 
-/** A reason worded here for the person, as opposed to one the server sent. */
 class Refusal extends Error {}
 
-/** The sentence the server wrote for the person, or `fallback` when it sent none. */
 function sentence(cause: unknown, fallback: string): string {
   const match = cause instanceof Error ? /Uncaught Error: ([^\n]+)/.exec(cause.message) : null;
   if (cause instanceof Refusal) return cause.message;
@@ -76,8 +85,41 @@ function saved(tiles: readonly Tile[]): Media[] {
   return tiles.flatMap((tile) => (tile.state === "ready" && tile.media ? [tile.media] : []));
 }
 
-function snapshot(text: string, accountIds: readonly string[], media: readonly Media[]): string {
-  return JSON.stringify([text, [...accountIds].sort(), media.map((item) => item.storageId)]);
+function normalizeOverrides(map: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(map)) {
+    if (value.trim().length > 0) out[key] = value;
+  }
+  return out;
+}
+
+function snapshot(
+  title: string,
+  text: string,
+  platformText: Record<string, string>,
+  youtubeVisibility: YoutubeVisibility,
+  accountIds: readonly string[],
+  media: readonly Media[],
+  coverId: string | null,
+): string {
+  const cleanOverrides = Object.entries(normalizeOverrides(platformText)).sort(([a], [b]) => a.localeCompare(b));
+  return JSON.stringify([title.trim(), text, cleanOverrides, youtubeVisibility, [...accountIds].sort(), media.map((item) => item.storageId), coverId]);
+}
+
+function formatWhen(timestamp: number): string {
+  const date = new Date(timestamp);
+  const month = date.toLocaleString("en-US", { month: "short" });
+  const day = date.getDate();
+  const hh = String(date.getHours()).padStart(2, "0");
+  const mm = String(date.getMinutes()).padStart(2, "0");
+  return `${month} ${day} at ${hh}:${mm}`;
+}
+
+function tomorrowAt(hour: number): number {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  d.setHours(hour, 0, 0, 0);
+  return d.getTime();
 }
 
 export default function DraftEditor() {
@@ -89,16 +131,26 @@ export default function DraftEditor() {
   const save = useMutation(api.drafts.save);
   const remove = useMutation(api.drafts.remove);
   const publish = useMutation(api.drafts.publish);
+  const schedule = useMutation(api.drafts.schedule);
+  const cancelSchedule = useMutation(api.drafts.cancelSchedule);
+  const updateYouTubePost = useAction(api.publish.updateYouTubePost);
   const generateUploadUrl = useMutation(api.drafts.generateUploadUrl);
   const attach = useMutation(api.media.attach);
 
-  // A new draft gets its ID on the first save; the screen then follows it live.
   const [draftId, setDraftId] = useState<Id<"drafts"> | null>(id === "new" ? null : (id as Id<"drafts">));
   const existing = draftId === null ? undefined : drafts?.find((draft) => draft._id === draftId);
 
+  const [title, setTitle] = useState("");
   const [text, setText] = useState("");
+  const [platformText, setPlatformText] = useState<Record<string, string>>({});
+  const [copyTab, setCopyTab] = useState<CopyTab>("core");
+  const [youtubeVisibility, setYoutubeVisibility] = useState<YoutubeVisibility>(YOUTUBE_VISIBILITY);
   const [accountIds, setAccountIds] = useState<Id<"accounts">[]>([]);
   const [tiles, setTiles] = useState<Tile[]>([]);
+  const [cover, setCover] = useState<CoverState | null>(null);
+  const [coverBusy, setCoverBusy] = useState(false);
+  const [showSchedule, setShowSchedule] = useState(false);
+  const [showPreview, setShowPreview] = useState(false);
   const [editing, setEditing] = useState<{ key: string; loadError: string | null } | null>(null);
   const nextKey = useRef(0);
   const [savedAs, setSavedAs] = useState<string | null>(null);
@@ -125,18 +177,26 @@ export default function DraftEditor() {
       },
       edit: NO_EDIT,
     }));
+    const loadedTitle = existing.title ?? "";
+    const loadedOverrides = existing.platformText ?? {};
+    const loadedVis = existing.youtubeVisibility ?? YOUTUBE_VISIBILITY;
+    const loadedCover = existing.cover ? { storageId: existing.cover.storageId, preview: existing.cover.url } : null;
+    setTitle(loadedTitle);
     setText(existing.text);
+    setPlatformText(loadedOverrides);
+    setYoutubeVisibility(loadedVis);
     setAccountIds(ids);
     setTiles(items);
-    setSavedAs(snapshot(existing.text, ids, saved(items)));
+    setCover(loadedCover);
+    setSavedAs(snapshot(loadedTitle, existing.text, loadedOverrides, loadedVis, ids, saved(items), loadedCover?.storageId ?? null));
     setLoaded(true);
   }, [existing, loaded]);
 
   const media = saved(tiles);
-  const uploading = tiles.some((tile) => tile.state === "uploading");
-  // A file still on its way counts by its kind, so "one video on its own" shows before the upload ends.
+  const hasVideo = tiles.some((tile) => tile.kind === "video");
+  const uploading = tiles.some((tile) => tile.state === "uploading") || coverBusy;
   const checked: DraftMediaInfo[] = tiles.flatMap((tile) => (tile.state === "failed" ? [] : [tile.media ?? { kind: tile.kind }]));
-  const dirty = snapshot(text, accountIds, media) !== savedAs;
+  const dirty = snapshot(title, text, platformText, youtubeVisibility, accountIds, media, cover?.storageId ?? null) !== savedAs;
   const status = existing?.status ?? "draft";
   const sending = status === "publishing";
   const done = status === "published";
@@ -144,17 +204,26 @@ export default function DraftEditor() {
 
   const targetOf = (accountId: string) => existing?.targets.find((target) => target.accountId === accountId);
   const selected = (accounts ?? []).filter((account) => accountIds.includes(account._id));
-  // What already went out stays out; only the rest can still be edited, checked and sent.
+  const selectedPlatforms = [...new Set(selected.map((account) => account.platform))];
+  const hasYouTube = selectedPlatforms.includes("youtube");
   const remaining = selected.filter((account) => targetOf(account._id)?.state !== "published");
   const choosable = (accounts ?? []).filter((account) => targetOf(account._id)?.state !== "published");
   const results = (existing?.targets ?? []).filter((target) => target.state !== null);
   const failed = results.some((target) => target.state === "failed");
 
-  // Saved drafts show the server's verdict. Unsaved edits are checked here so feedback is instant;
-  // the permissions each account allowed at sign-in are only known to the server, so those show after saving.
+  useEffect(() => {
+    if (copyTab !== "core" && !selectedPlatforms.includes(copyTab)) {
+      setCopyTab("core");
+    }
+  }, [copyTab, selectedPlatforms]);
+
+  const cleanOverrides = normalizeOverrides(platformText);
   const issuesByAccount = remaining.map((account) => {
     const target = targetOf(account._id);
-    const issues = !dirty && target ? target.issues : postingIssues(account, text, checked, { permissions: false });
+    const issues =
+      !dirty && target
+        ? target.issues
+        : postingIssues(account, text, checked, { permissions: false, platformText: cleanOverrides, title });
     return { handle: account.handle, issues };
   });
   const issueLines = [...new Set(issuesByAccount.flatMap((entry) => entry.issues))].map((issue) => {
@@ -162,28 +231,38 @@ export default function DraftEditor() {
     return handles.length === remaining.length ? issue : `${handles.join(", ")}: ${issue}`;
   });
 
-  const length = [...text.trim()].length;
-  const limits = remaining.flatMap((account) => TEXT_LIMIT[account.platform] ?? []);
+  const activeText = copyTab === "core" ? text : (platformText[copyTab] ?? "");
+  const effectiveActiveText = copyTab === "core" ? text : textForPlatform(text, copyTab, platformText);
+  const length = [...effectiveActiveText.trim()].length;
+  const limits =
+    copyTab === "core"
+      ? remaining.flatMap((account) => (cleanOverrides[account.platform] ? [] : (TEXT_LIMIT[account.platform] ?? [])))
+      : TEXT_LIMIT[copyTab] !== undefined
+        ? [TEXT_LIMIT[copyTab]!]
+        : [];
   const limit = limits.length > 0 ? Math.min(...limits) : null;
 
-  const blank = text.trim().length === 0 && media.length === 0 && accountIds.length === 0;
+  const blank = title.trim().length === 0 && text.trim().length === 0 && media.length === 0 && accountIds.length === 0;
   const canSave = loaded && !busy && !locked && !uploading && dirty && !(draftId === null && blank);
   const canPublish = loaded && !busy && !locked && !uploading && remaining.length > 0 && issueLines.length === 0;
   const slots = MAX_DRAFT_MEDIA - tiles.length;
 
-  /** Saves pending edits and returns the draft's ID, or null when saving failed. */
   async function persist(): Promise<Id<"drafts"> | null> {
     if (!dirty && draftId !== null) return draftId;
     try {
-      const saved = await save({
+      const savedId = await save({
         ...(draftId ? { draftId } : {}),
+        title: title.trim() || null,
         text,
+        platformText: Object.keys(cleanOverrides).length > 0 ? cleanOverrides : null,
+        youtubeVisibility,
         accountIds,
         media,
+        cover: cover ? cover.storageId : null,
       });
-      setSavedAs(snapshot(text, accountIds, media));
-      setDraftId(saved);
-      return saved;
+      setSavedAs(snapshot(title, text, cleanOverrides, youtubeVisibility, accountIds, media, cover?.storageId ?? null));
+      setDraftId(savedId);
+      return savedId;
     } catch (cause) {
       setError(sentence(cause, "Couldn't save. Try again."));
       return null;
@@ -193,18 +272,62 @@ export default function DraftEditor() {
   async function saveAndClose() {
     setError(null);
     setBusy(true);
-    const saved = await persist();
+    const savedId = await persist();
     setBusy(false);
-    if (saved) router.back();
+    if (savedId) router.back();
   }
 
-  async function send(target: Id<"drafts">) {
+  async function send(target: Id<"drafts">, onlyAccountIds?: Id<"accounts">[]) {
     setError(null);
     setBusy(true);
     try {
-      await publish({ draftId: target });
+      await publish({ draftId: target, ...(onlyAccountIds ? { accountIds: onlyAccountIds } : {}) });
     } catch (cause) {
       setError(sentence(cause, "Couldn't publish. Try again."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function scheduleAt(at: number) {
+    setError(null);
+    setBusy(true);
+    const savedId = await persist();
+    if (!savedId) {
+      setBusy(false);
+      return;
+    }
+    try {
+      await schedule({ draftId: savedId, at });
+      setShowSchedule(false);
+    } catch (cause) {
+      setError(sentence(cause, "Couldn't schedule. Try again."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function clearSchedule() {
+    if (!draftId) return;
+    setError(null);
+    setBusy(true);
+    try {
+      await cancelSchedule({ draftId });
+    } catch (cause) {
+      setError(sentence(cause, "Couldn't cancel the schedule."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function makeYouTubePublic(accountId: Id<"accounts">, videoId: string) {
+    setError(null);
+    setBusy(true);
+    try {
+      await updateYouTubePost({ accountId, videoId, visibility: "public" });
+      Alert.alert("YouTube video is now public.");
+    } catch (cause) {
+      setError(sentence(cause, "Couldn't update YouTube visibility."));
     } finally {
       setBusy(false);
     }
@@ -213,16 +336,15 @@ export default function DraftEditor() {
   async function confirmPublish() {
     setError(null);
     setBusy(true);
-    const saved = await persist();
-    // The server has the last word: it may know a reason this screen couldn't check.
-    const fresh = saved ? (await convex.query(api.drafts.list, {})).find((draft) => draft._id === saved) : undefined;
+    const savedId = await persist();
+    const fresh = savedId ? (await convex.query(api.drafts.list, {})).find((draft) => draft._id === savedId) : undefined;
     setBusy(false);
-    if (!saved || !fresh) return;
+    if (!savedId || !fresh) return;
     const pending = fresh.targets.filter((target) => target.state !== "published");
     if (pending.length === 0 || pending.some((target) => target.issues.length > 0)) return;
     Alert.alert(`Post to ${pending.map((target) => target.handle).join(", ")}?`, undefined, [
       { text: "Cancel", style: "cancel" },
-      { text: "Publish", onPress: () => void send(saved) },
+      { text: "Publish", onPress: () => void send(savedId) },
     ]);
   }
 
@@ -245,7 +367,6 @@ export default function DraftEditor() {
     setTiles((current) => current.map((tile) => (tile.key === key ? { ...tile, ...change } : tile)));
   }
 
-  /** Uploads a local file and returns the server's own record of it. */
   async function upload(uri: string, kind: DraftMediaKind, mimeType: string, filename: string | undefined, onProgress?: (fraction: number) => void) {
     if (sizeOf(uri) > (kind === "image" ? MAX_IMAGE_BYTES : MAX_VIDEO_BYTES)) throw new Refusal(tooBig(kind));
     const storageId = (await uploadFile(uri, mimeType, await generateUploadUrl({}), onProgress)) as Id<"_storage">;
@@ -260,13 +381,35 @@ export default function DraftEditor() {
     return item;
   }
 
+  async function pickCover() {
+    setError(null);
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        allowsMultipleSelection: false,
+        quality: 1,
+      });
+      if (result.canceled || !result.assets[0]) return;
+      setCoverBusy(true);
+      const rendered = await renderImage({ uri: result.assets[0].uri });
+      if (sizeOf(rendered.uri) > MAX_COVER_BYTES) {
+        throw new Refusal("A cover can be up to 2 MB.");
+      }
+      const uploaded = await upload(rendered.uri, "image", "image/jpeg", "cover.jpg");
+      setCover({ storageId: uploaded.storageId, preview: rendered.uri });
+    } catch (cause) {
+      setError(sentence(cause, "Couldn't set that cover. Try again."));
+    } finally {
+      setCoverBusy(false);
+    }
+  }
+
   async function start(key: string, picked: Picked) {
     patch(key, { state: "uploading", progress: 0 });
     try {
       let { uri, mimeType, filename } = picked;
       let original: LocalImage | undefined;
       if (picked.kind === "image") {
-        // HEIC and WebP are refused by X and LinkedIn, so every image goes up as a JPEG.
         original = await renderImage(picked);
         uri = original.uri;
         mimeType = "image/jpeg";
@@ -291,7 +434,6 @@ export default function DraftEditor() {
           mediaTypes: ["images", "videos"],
           allowsMultipleSelection: true,
           selectionLimit: slots,
-          // Images are re-encoded once, here, so the picker must not compress them first.
           quality: 1,
         });
       } else {
@@ -310,7 +452,6 @@ export default function DraftEditor() {
     const added: { key: string; picked: Picked }[] = [];
     for (const asset of result.assets.slice(0, slots)) {
       const kind: DraftMediaKind = asset.type === "video" || asset.mimeType?.startsWith("video/") ? "video" : "image";
-      // An image is re-encoded smaller before it goes up; a video goes as it is, so it is refused here.
       if (kind === "video" && (asset.fileSize ?? 0) > MAX_VIDEO_BYTES) {
         setError(tooBig("video"));
         continue;
@@ -337,7 +478,6 @@ export default function DraftEditor() {
         edit: NO_EDIT,
       })),
     ]);
-    // One at a time: several large uploads at once starve each other on a phone connection.
     for (const { key, picked } of added) await start(key, picked);
   }
 
@@ -353,7 +493,6 @@ export default function DraftEditor() {
     setError(null);
     setEditing({ key: tile.key, loadError: null });
     if (tile.original || !tile.media || !tile.preview) return;
-    // A draft opened again only has the saved copy, so that becomes the image edits start from.
     try {
       const original = await renderImage({ uri: await downloadImage(tile.preview, tile.media.storageId) });
       patch(tile.key, { original });
@@ -362,7 +501,6 @@ export default function DraftEditor() {
     }
   }
 
-  /** Renders the edit from the original and swaps the new file in at the same position. */
   async function applyEdit(key: string, edit: ImageEdit): Promise<string | null> {
     const tile = tiles.find((other) => other.key === key);
     if (!tile?.original) return "Couldn't open that image. Try again.";
@@ -384,17 +522,33 @@ export default function DraftEditor() {
     setAccountIds((current) => (current.includes(accountId) ? current.filter((other) => other !== accountId) : [...current, accountId]));
   }
 
+  function updateActiveText(next: string) {
+    if (copyTab === "core") {
+      setText(next);
+    } else {
+      setPlatformText((current) => ({ ...current, [copyTab]: next }));
+    }
+  }
+
   return (
     <KeyboardAwareScrollView
       style={{ backgroundColor: color.bg }}
       keyboardShouldPersistTaps="handled"
-      contentContainerStyle={{ paddingTop: insets.top + 12, paddingBottom: insets.bottom + 32, paddingHorizontal: 16, gap: 24 }}
+      contentContainerStyle={{ paddingTop: insets.top + 12, paddingBottom: insets.bottom + 32, paddingHorizontal: 16, gap: 20 }}
     >
-      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
         <Button testID="close-draft" size="sm" variant="outline" label="Close" onPress={() => router.back()} />
         {done ? null : (
-          <View style={{ flexDirection: "row", gap: 12 }}>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, justifyContent: "flex-end" }}>
             <Button testID="save-draft" size="sm" label="Save" disabled={!canSave} onPress={() => void saveAndClose()} />
+            <Button
+              testID="schedule-draft"
+              size="sm"
+              variant="outline"
+              label={existing?.scheduledFor ? "Scheduled" : "Schedule"}
+              disabled={!canPublish}
+              onPress={() => setShowSchedule((prev) => !prev)}
+            />
             <Button
               testID="publish-draft"
               size="sm"
@@ -407,18 +561,181 @@ export default function DraftEditor() {
         )}
       </View>
 
+      {existing?.scheduledFor ? (
+        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderWidth: 2, borderColor: color.coral, padding: 10, gap: 10 }}>
+          <Label tone="coral">Scheduled · {formatWhen(existing.scheduledFor)}</Label>
+          <Button size="sm" variant="ghost" label="Cancel" disabled={busy} onPress={() => void clearSchedule()} />
+        </View>
+      ) : null}
+
+      {showSchedule && !locked ? (
+        <View style={{ borderWidth: 2, borderColor: color.line, padding: 12, gap: 10 }}>
+          <Label tone="dim">Publish automatically</Label>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+            <Button size="sm" variant="outline" label="In 1 hour" disabled={busy} onPress={() => void scheduleAt(Date.now() + 3_600_000)} />
+            <Button size="sm" variant="outline" label="In 3 hours" disabled={busy} onPress={() => void scheduleAt(Date.now() + 3 * 3_600_000)} />
+            <Button size="sm" variant="outline" label="Tomorrow 09:00" disabled={busy} onPress={() => void scheduleAt(tomorrowAt(9))} />
+            <Button size="sm" variant="outline" label="Tomorrow 18:00" disabled={busy} onPress={() => void scheduleAt(tomorrowAt(18))} />
+          </View>
+        </View>
+      ) : null}
+
+      {accounts === undefined ? null : accounts.length === 0 ? (
+        <View style={{ alignItems: "flex-start" }}>
+          <Button testID="draft-connect" variant="outline" label="Connect an account" onPress={() => router.push("/add-account")} />
+        </View>
+      ) : choosable.length > 0 ? (
+        <View style={{ gap: 8 }}>
+          <Label tone="dim">Accounts</Label>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+            {choosable.map((account) => {
+              const active = accountIds.includes(account._id);
+              return (
+                <Pressable
+                  key={account._id}
+                  testID={`draft-account-${account._id}`}
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: active, disabled: locked }}
+                  accessibilityLabel={account.handle}
+                  disabled={locked}
+                  onPress={() => toggle(account._id)}
+                  hitSlop={{ top: 6, bottom: 6 }}
+                  style={{
+                    height: 32,
+                    paddingHorizontal: 10,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 6,
+                    borderWidth: 2,
+                    borderColor: active ? color.coral : color.line,
+                    backgroundColor: active ? color.coral : "transparent",
+                  }}
+                >
+                  <PlatformLogo platform={account.platform} size={14} tint={active ? color.bg : color.fg} />
+                  <Label size={11} tone={active ? "bg" : "fg"} numberOfLines={1}>
+                    {account.handle}
+                  </Label>
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+      ) : null}
+
+      {hasYouTube ? (
+        <View style={{ gap: 10, borderWidth: 1, borderColor: color.line, padding: 12 }}>
+          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+            <Label tone="dim">YouTube title & visibility</Label>
+            <Label size={10} tone={[...title.trim()].length > YOUTUBE_TITLE_LIMIT ? "coral" : "faint"}>
+              {[...title.trim()].length}/{YOUTUBE_TITLE_LIMIT}
+            </Label>
+          </View>
+          <TextInput
+            value={title}
+            onChangeText={setTitle}
+            editable={!locked}
+            maxLength={YOUTUBE_TITLE_LIMIT * 2}
+            placeholder="Video title (defaults to first line)"
+            placeholderTextColor={color.faint}
+            style={{
+              fontFamily: font.mono,
+              fontSize: 14,
+              color: color.fg,
+              paddingVertical: 6,
+              borderBottomWidth: 2,
+              borderBottomColor: color.line,
+            }}
+          />
+          <View style={{ flexDirection: "row", gap: 8 }}>
+            {YOUTUBE_VISIBILITIES.map((vis) => {
+              const active = youtubeVisibility === vis;
+              return (
+                <Pressable
+                  key={vis}
+                  disabled={locked}
+                  onPress={() => setYoutubeVisibility(vis)}
+                  style={{
+                    height: 30,
+                    paddingHorizontal: 10,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    borderWidth: 2,
+                    borderColor: active ? color.fg : color.line,
+                    backgroundColor: active ? color.fg : "transparent",
+                  }}
+                >
+                  <Label size={10} tone={active ? "bg" : "fg"}>
+                    {vis}
+                  </Label>
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+      ) : null}
+
       <View style={{ gap: 8 }}>
+        {selectedPlatforms.length > 0 ? (
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+            {(["core", ...selectedPlatforms] as CopyTab[]).map((tab) => {
+              const active = copyTab === tab;
+              const customized = tab !== "core" && Boolean(cleanOverrides[tab]);
+              return (
+                <Pressable
+                  key={tab}
+                  onPress={() => setCopyTab(tab)}
+                  style={{
+                    height: 28,
+                    paddingHorizontal: 10,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 5,
+                    borderWidth: 2,
+                    borderColor: active ? color.fg : color.line,
+                    backgroundColor: active ? color.fg : "transparent",
+                  }}
+                >
+                  <Label size={10} tone={active ? "bg" : "fg"}>
+                    {tab === "core" ? "Core" : PLATFORM_LABEL[tab]}
+                  </Label>
+                  {customized ? (
+                    <View style={{ width: 6, height: 6, backgroundColor: active ? color.bg : color.coral }} />
+                  ) : null}
+                </Pressable>
+              );
+            })}
+            {copyTab !== "core" && cleanOverrides[copyTab] && !locked ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                label="Use core"
+                onPress={() =>
+                  setPlatformText((current) => {
+                    const next = { ...current };
+                    delete next[copyTab];
+                    return next;
+                  })
+                }
+              />
+            ) : null}
+          </View>
+        ) : null}
+
         {loaded ? (
           <TextInput
             testID="draft-text"
             accessibilityLabel="Post text"
-            value={text}
-            onChangeText={setText}
+            value={activeText}
+            onChangeText={updateActiveText}
             editable={!locked}
-            autoFocus={!locked}
+            autoFocus={!locked && copyTab === "core"}
             multiline
             maxLength={MAX_DRAFT_TEXT}
-            placeholder="Write your post"
+            placeholder={
+              copyTab === "core"
+                ? "Write your post"
+                : `Override for ${PLATFORM_LABEL[copyTab]} (blank uses core post)`
+            }
             placeholderTextColor={color.faint}
             textAlignVertical="top"
             style={{
@@ -449,45 +766,6 @@ export default function DraftEditor() {
         ) : null}
       </View>
 
-      {accounts === undefined ? null : accounts.length === 0 ? (
-        <View style={{ alignItems: "flex-start" }}>
-          <Button testID="draft-connect" variant="outline" label="Connect an account" onPress={() => router.push("/add-account")} />
-        </View>
-      ) : choosable.length > 0 ? (
-        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-          {choosable.map((account) => {
-            const active = accountIds.includes(account._id);
-            return (
-              <Pressable
-                key={account._id}
-                testID={`draft-account-${account._id}`}
-                accessibilityRole="checkbox"
-                accessibilityState={{ checked: active, disabled: locked }}
-                accessibilityLabel={account.handle}
-                disabled={locked}
-                onPress={() => toggle(account._id)}
-                hitSlop={{ top: 6, bottom: 6 }}
-                style={{
-                  height: 32,
-                  paddingHorizontal: 10,
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 6,
-                  borderWidth: 2,
-                  borderColor: active ? color.coral : color.line,
-                  backgroundColor: active ? color.coral : "transparent",
-                }}
-              >
-                <PlatformLogo platform={account.platform} size={14} tint={active ? color.bg : color.fg} />
-                <Label size={11} tone={active ? "bg" : "fg"} numberOfLines={1}>
-                  {account.handle}
-                </Label>
-              </Pressable>
-            );
-          })}
-        </View>
-      ) : null}
-
       {tiles.length > 0 || !locked ? (
         <View style={{ gap: 12 }}>
           {tiles.length > 0 ? (
@@ -496,7 +774,7 @@ export default function DraftEditor() {
                 const name = `${tile.kind === "video" ? "Video" : "Image"} ${index + 1}`;
                 const editable = !locked && tile.kind === "image" && tile.state === "ready";
                 const retry = tile.state === "failed" && tile.picked ? tile.picked : null;
-                const status =
+                const tileStatus =
                   tile.state === "failed" ? "Retry" : tile.state === "uploading" ? (tile.progress > 0 ? `${Math.round(tile.progress * 100)}%` : "Uploading") : null;
                 return (
                   <View
@@ -506,7 +784,7 @@ export default function DraftEditor() {
                     <Pressable
                       testID={retry ? `draft-media-retry-${index}` : `draft-media-edit-${index}`}
                       accessibilityRole="button"
-                      accessibilityLabel={retry ? `${name} failed. Try again` : editable ? `Edit ${name}` : status ? `${name}, ${status}` : name}
+                      accessibilityLabel={retry ? `${name} failed. Try again` : editable ? `Edit ${name}` : tileStatus ? `${name}, ${tileStatus}` : name}
                       disabled={!retry && !editable}
                       onPress={() => (retry ? void start(tile.key, retry) : void openEditor(tile))}
                       style={{ flex: 1, alignItems: "center", justifyContent: "center" }}
@@ -524,10 +802,10 @@ export default function DraftEditor() {
                           {tile.duration ? <Label>{formatDuration(tile.duration)}</Label> : null}
                         </View>
                       )}
-                      {status || editable ? (
+                      {tileStatus || editable ? (
                         <View style={{ position: "absolute", left: 0, right: 0, bottom: 0, paddingVertical: 2, alignItems: "center", backgroundColor: color.bg }}>
                           <Label testID={`draft-media-status-${index}`} tone={tile.state === "failed" ? "coral" : "fg"}>
-                            {status ?? "Edit"}
+                            {tileStatus ?? "Edit"}
                           </Label>
                         </View>
                       ) : null}
@@ -563,9 +841,18 @@ export default function DraftEditor() {
             </View>
           ) : null}
           {locked ? null : slots > 0 ? (
-            <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 12 }}>
+            <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
               <Button testID="draft-add-media" size="sm" variant="outline" label="Add media" disabled={uploading} onPress={() => void add("library")} />
               <Button testID="draft-camera" size="sm" variant="outline" label="Camera" disabled={uploading} onPress={openCamera} />
+              {hasVideo ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  label={coverBusy ? "Uploading…" : cover ? "Change cover" : "Add cover"}
+                  disabled={uploading}
+                  onPress={() => void pickCover()}
+                />
+              ) : null}
               <Label testID="draft-media-count">
                 {tiles.length}/{MAX_DRAFT_MEDIA}
               </Label>
@@ -575,19 +862,70 @@ export default function DraftEditor() {
               {tiles.length}/{MAX_DRAFT_MEDIA} attached
             </Label>
           )}
+          {hasVideo && cover ? (
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+              {cover.preview ? (
+                <Image source={{ uri: cover.preview }} style={{ width: 56, height: 56, borderWidth: 2, borderColor: color.line }} resizeMode="cover" />
+              ) : null}
+              <Label tone="dim">Video cover (YouTube + Reel)</Label>
+              {!locked ? <Button size="sm" variant="ghost" label="Remove" onPress={() => setCover(null)} /> : null}
+            </View>
+          ) : null}
+        </View>
+      ) : null}
+
+      {selected.length > 0 ? (
+        <View style={{ gap: 10 }}>
+          <Pressable onPress={() => setShowPreview((prev) => !prev)}>
+            <Label tone="dim">{showPreview ? "Hide previews" : `Preview across ${selected.length} account${selected.length === 1 ? "" : "s"}`}</Label>
+          </Pressable>
+          {showPreview
+            ? selected.map((account) => {
+                const resolved = textForPlatform(text, account.platform, cleanOverrides).trim();
+                const yt = account.platform === "youtube" ? youtubeTitle(resolved, media[0]?.filename, title) : null;
+                return (
+                  <View key={account._id} style={{ borderWidth: 1, borderColor: color.line, padding: 12, gap: 6 }}>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                      <PlatformLogo platform={account.platform} size={12} opacity={0.85} />
+                      <Label size={10} tone="fg">
+                        {PLATFORM_LABEL[account.platform]} · {account.handle}
+                      </Label>
+                      {account.platform === "youtube" ? (
+                        <Label size={10} tone="faint">
+                          · {youtubeVisibility}
+                        </Label>
+                      ) : null}
+                    </View>
+                    {yt ? <Body style={{ fontFamily: font.monoBold }}>{yt}</Body> : null}
+                    <Body tone={resolved ? "fg" : "faint"} style={{ fontSize: 13, lineHeight: 19 }}>
+                      {resolved || "(No text)"}
+                    </Body>
+                  </View>
+                );
+              })
+            : null}
         </View>
       ) : null}
 
       {results.length > 0 ? (
         <View style={{ gap: 12 }}>
           {results.map((target) => (
-            <View key={target.accountId} testID={`draft-result-${target.accountId}`} style={{ gap: 4 }}>
+            <View key={target.accountId} testID={`draft-result-${target.accountId}`} style={{ gap: 6 }}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
                 <PlatformLogo platform={target.platform} size={12} opacity={0.7} />
                 <Label size={11} tone="fg" numberOfLines={1} style={{ flexShrink: 1 }}>
                   {target.handle}
                 </Label>
                 <View style={{ flex: 1 }} />
+                {target.state === "published" && target.platform === "youtube" && target.platformPostId && youtubeVisibility !== "public" ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    label="Make public"
+                    disabled={busy}
+                    onPress={() => void makeYouTubePublic(target.accountId, target.platformPostId!)}
+                  />
+                ) : null}
                 {target.state === "published" && target.permalink ? (
                   <Pressable
                     testID={`draft-link-${target.accountId}`}
@@ -600,7 +938,15 @@ export default function DraftEditor() {
                       View post
                     </Label>
                   </Pressable>
-                ) : target.state === "failed" ? null : (
+                ) : target.state === "failed" && draftId ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    label="Retry"
+                    disabled={busy}
+                    onPress={() => void send(draftId, [target.accountId])}
+                  />
+                ) : (
                   <Label size={11}>{target.state === "published" ? "Published" : "Publishing"}</Label>
                 )}
               </View>

@@ -148,3 +148,18 @@ export const replyResult = internalMutation({
     });
   },
 });
+
+export const listInternal = internalQuery({
+  args: { owner: v.string(), open: v.boolean(), platform: v.optional(platformValidator), limit: v.optional(v.number()) },
+  handler: async (ctx, args) => {
+    const limit = Math.min(Math.max(Math.round(args.limit ?? 25), 1), 50);
+    const base = args.open
+      ? ctx.db
+          .query("comments")
+          .withIndex("by_owner_and_state_and_publishedAt", (q) => q.eq("owner", args.owner).eq("state", "open"))
+      : ctx.db.query("comments").withIndex("by_owner_and_publishedAt", (q) => q.eq("owner", args.owner));
+    const rows = await base.order("desc").take(args.platform ? limit * 3 : limit);
+    const filtered = args.platform === undefined ? rows : rows.filter((row) => row.platform === args.platform).slice(0, limit);
+    return await withPosts(ctx, filtered);
+  },
+});

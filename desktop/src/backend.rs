@@ -1,6 +1,7 @@
 //! The network side of the app, on its own thread: the Convex connection, the
-//! signed-in session and every live query. The window never waits on it. Results
-//! arrive as events that `poll` folds into state.
+//! signed-in session, every live query, and the loopback Studio MCP bridge for
+//! embedded Claude Code. The window never waits on it. Results arrive as events
+//! that `poll` folds into state.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -15,6 +16,7 @@ use tokio::task::JoinHandle;
 
 use crate::auth::{self, Session};
 use crate::config;
+use crate::studio_bridge::{self, BridgeInfo, DraftPatch, Snapshot};
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum AuthState {
@@ -49,13 +51,20 @@ pub enum Cmd {
     /// The full set of queries the window wants live. Anything else is dropped.
     Subscribe(Vec<QuerySpec>),
     Mutation { name: &'static str, args: Json },
-    /// Saves the draft, then publishes it. One command, because a new draft has no ID until it is saved.
-    PublishDraft { draft: Json },
+    /// Calls a Convex action (e.g. updating YouTube video visibility).
+    Action { name: &'static str, args: Json, success: Option<String> },
+    /// Saves the draft and reports back its ID so Studio stays attached to it.
+    SaveDraft { draft: Json, quiet: bool },
+    /// Saves the draft, then publishes it (all remaining targets or only `account_ids`).
+    PublishDraft { draft: Json, account_ids: Option<Vec<String>> },
+    /// Saves the draft, then schedules it for `at` (Unix ms).
+    ScheduleDraft { draft: Json, at: f64 },
     /// Starts connecting a platform account; the browser does the rest.
-    /// `pages` connects the LinkedIn company Pages the user administers instead of their profile.
     Connect { platform: String, another: bool, pages: bool },
     /// Sends a file to storage and registers it, so a draft can hold it.
     Upload { key: u64, path: PathBuf, mime: String, name: String },
+    /// Sends a JPEG cover image to storage and registers it.
+    UploadCover { key: u64, path: PathBuf, mime: String, name: String },
     /// Fetches a saved attachment to a local file.
     Download { key: u64, url: String, to: PathBuf },
     /// Asks whether a newer build of the app exists.
@@ -72,10 +81,22 @@ pub enum Event {
     Notice(String),
     /// The server's record of an uploaded file, or why it didn't arrive.
     Uploaded { key: u64, result: Result<Json, String> },
+    /// The server's record of an uploaded video cover, or why it didn't arrive.
+    CoverUploaded { key: u64, result: Result<Json, String> },
     Downloaded { key: u64, result: Result<PathBuf, String> },
     UpdateAvailable(crate::update::Latest),
     /// The new build is installed and how to start it, or why it couldn't be.
     UpdateInstalled(Result<crate::update::Relaunch, String>),
+    /// A draft save completed and returned its Convex ID.
+    DraftSaved(String),
+    /// The loopback Studio MCP server is listening and ready for Claude Code.
+    BridgeReady(BridgeInfo),
+    /// Claude Code created or updated a draft via the Studio MCP bridge.
+    StudioApplyDraft(DraftPatch),
+    /// Claude Code switched Studio to another saved draft.
+    StudioOpenDraft(String),
+    /// Claude Code uploaded a local file and wants it attached to the open draft.
+    StudioAttachUploaded { path: PathBuf, record: Json, as_cover: bool },
 }
 
 enum Internal {
@@ -83,13 +104,13 @@ enum Internal {
 }
 
 #[derive(Clone)]
-struct Out {
+pub(crate) struct Out {
     events: Arc<Mutex<Vec<Event>>>,
     wake: rune::Waker,
 }
 
 impl Out {
-    fn push(&self, event: Event) {
+    pub(crate) fn push(&self, event: Event) {
         self.events.lock().unwrap().push(event);
         (self.wake)();
     }
@@ -98,21 +119,24 @@ impl Out {
 pub struct Backend {
     cmds: mpsc::UnboundedSender<Cmd>,
     events: Arc<Mutex<Vec<Event>>>,
+    snapshot: Arc<Mutex<Snapshot>>,
 }
 
 impl Backend {
     pub fn start(wake: rune::Waker) -> Backend {
         let (cmds, receiver) = mpsc::unbounded_channel();
         let events = Arc::new(Mutex::new(Vec::new()));
+        let snapshot = Arc::new(Mutex::new(Snapshot::default()));
         let out = Out { events: events.clone(), wake };
+        let snap_bg = snapshot.clone();
         std::thread::Builder::new()
             .name("backend".into())
             .spawn(move || {
                 let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("tokio runtime");
-                runtime.block_on(run(receiver, out));
+                runtime.block_on(run(receiver, out, snap_bg));
             })
             .expect("backend thread");
-        Backend { cmds, events }
+        Backend { cmds, events, snapshot }
     }
 
     pub fn send(&self, cmd: Cmd) {
@@ -122,9 +146,13 @@ impl Backend {
     pub fn drain(&self) -> Vec<Event> {
         std::mem::take(&mut *self.events.lock().unwrap())
     }
+
+    pub fn set_snapshot(&self, next: Snapshot) {
+        *self.snapshot.lock().unwrap() = next;
+    }
 }
 
-fn args_of(json: &str) -> BTreeMap<String, Value> {
+pub(crate) fn args_of(json: &str) -> BTreeMap<String, Value> {
     let Ok(Json::Object(map)) = serde_json::from_str::<Json>(json) else { return BTreeMap::new() };
     map.into_iter().filter_map(|(key, value)| Value::try_from(value).ok().map(|value| (key, value))).collect()
 }
@@ -136,7 +164,7 @@ fn readable(message: &str) -> String {
     if text.is_empty() { "Something went wrong. Try again.".to_string() } else { text.to_string() }
 }
 
-fn failure(result: &FunctionResult) -> Option<String> {
+pub(crate) fn failure(result: &FunctionResult) -> Option<String> {
     match result {
         FunctionResult::Value(_) => None,
         FunctionResult::ErrorMessage(message) => Some(readable(message)),
@@ -160,10 +188,13 @@ async fn connect(out: &Out) -> ConvexClient {
     }
 }
 
-async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, out: Out) {
+async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, out: Out, snapshot: Arc<Mutex<Snapshot>>) {
     // Before anything else, so an app too old to connect can still update itself.
     check_update(out.clone());
     let mut client = connect(&out).await;
+    // Start the local loopback MCP bridge for embedded Claude Code.
+    let _bridge = studio_bridge::start(client.clone(), snapshot, out.clone()).await;
+
     let (internal_tx, mut internal) = mpsc::unbounded_channel::<Internal>();
     let mut subscriptions: HashMap<QuerySpec, JoinHandle<()>> = HashMap::new();
     let mut sign_in: Option<JoinHandle<()>> = None;
@@ -227,7 +258,39 @@ async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, out: Out) {
                             }
                         });
                     }
-                    Cmd::PublishDraft { draft } => {
+                    Cmd::Action { name, args, success } => {
+                        let mut client = client.clone();
+                        let out = out.clone();
+                        tokio::spawn(async move {
+                            match client.action(name, args_of(&args.to_string())).await {
+                                Ok(result) => {
+                                    if let Some(message) = failure(&result) {
+                                        out.push(Event::Notice(message));
+                                    } else if let Some(ok) = success {
+                                        out.push(Event::Notice(ok));
+                                    }
+                                }
+                                Err(_) => out.push(Event::Notice("That didn't go through. Try again.".into())),
+                            }
+                        });
+                    }
+                    Cmd::SaveDraft { draft, quiet } => {
+                        let mut client = client.clone();
+                        let out = out.clone();
+                        tokio::spawn(async move {
+                            match client.mutation("drafts:save", args_of(&draft.to_string())).await {
+                                Ok(FunctionResult::Value(Value::String(id))) => {
+                                    out.push(Event::DraftSaved(id));
+                                    if !quiet {
+                                        out.push(Event::Notice("Draft saved.".into()));
+                                    }
+                                }
+                                Ok(result) => out.push(Event::Notice(failure(&result).unwrap_or_else(|| "The draft could not be saved.".into()))),
+                                Err(_) => out.push(Event::Notice("The draft could not be saved.".into())),
+                            }
+                        });
+                    }
+                    Cmd::PublishDraft { draft, account_ids } => {
                         let mut client = client.clone();
                         let out = out.clone();
                         tokio::spawn(async move {
@@ -237,10 +300,36 @@ async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, out: Out) {
                                 Ok(result) => return out.push(Event::Notice(failure(&result).unwrap_or_else(|| "The draft could not be saved.".into()))),
                                 Err(_) => return out.push(Event::Notice("The draft could not be saved.".into())),
                             };
-                            let args = serde_json::json!({ "draftId": draft_id });
+                            out.push(Event::DraftSaved(draft_id.clone()));
+                            let mut args = serde_json::json!({ "draftId": draft_id });
+                            if let Some(ids) = account_ids {
+                                args["accountIds"] = serde_json::json!(ids);
+                            }
                             match client.mutation("drafts:publish", args_of(&args.to_string())).await {
                                 Ok(result) => if let Some(message) = failure(&result) { out.push(Event::Notice(message)) },
                                 Err(_) => out.push(Event::Notice("That didn't go through. Try again.".into())),
+                            }
+                        });
+                    }
+                    Cmd::ScheduleDraft { draft, at } => {
+                        let mut client = client.clone();
+                        let out = out.clone();
+                        tokio::spawn(async move {
+                            let saved = client.mutation("drafts:save", args_of(&draft.to_string())).await;
+                            let draft_id = match saved {
+                                Ok(FunctionResult::Value(Value::String(id))) => id,
+                                Ok(result) => return out.push(Event::Notice(failure(&result).unwrap_or_else(|| "The draft could not be saved.".into()))),
+                                Err(_) => return out.push(Event::Notice("The draft could not be saved.".into())),
+                            };
+                            out.push(Event::DraftSaved(draft_id.clone()));
+                            let args = serde_json::json!({ "draftId": draft_id, "at": at });
+                            match client.mutation("drafts:schedule", args_of(&args.to_string())).await {
+                                Ok(result) => {
+                                    if let Some(message) = failure(&result) {
+                                        out.push(Event::Notice(message));
+                                    }
+                                }
+                                Err(_) => out.push(Event::Notice("Could not schedule this draft. Try again.".into())),
                             }
                         });
                     }
@@ -250,6 +339,14 @@ async fn run(mut cmds: mpsc::UnboundedReceiver<Cmd>, out: Out) {
                         tokio::spawn(async move {
                             let result = upload(&mut client, &path, &mime, &name).await;
                             out.push(Event::Uploaded { key, result });
+                        });
+                    }
+                    Cmd::UploadCover { key, path, mime, name } => {
+                        let mut client = client.clone();
+                        let out = out.clone();
+                        tokio::spawn(async move {
+                            let result = upload(&mut client, &path, &mime, &name).await;
+                            out.push(Event::CoverUploaded { key, result });
                         });
                     }
                     Cmd::Download { key, url, to } => {

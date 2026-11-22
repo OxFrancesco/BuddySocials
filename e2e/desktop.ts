@@ -67,7 +67,7 @@ try {
   if ((await exited) !== 0) throw new Error("the app exited with an error");
   console.log(`signed in over OAuth and loaded ${fetched[1]} live queries`);
 
-  const scenes = ["home", "posts", "inbox", "goals", "accounts", "signed-out"];
+  const scenes = ["home", "studio", "posts", "drafts", "inbox", "goals", "accounts", "signed-out"];
   for (const scene of scenes) {
     const args = ["--snap", join(out, `${scene}.png`), "--scale", "2", "--size", "1180x760"];
     if (scene !== "home") args.push("--scene", scene);

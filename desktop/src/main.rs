@@ -1,8 +1,9 @@
-//! BuddySocials for the desktop: the same dashboard, posts, inbox, goals and
-//! accounts as the phone app, on the same live backend.
+//! BuddySocials for the desktop: the same dashboard, Studio with embedded Claude Code,
+//! posts, inbox, goals and accounts as the phone app, on the same live backend.
 
 mod auth;
 mod backend;
+mod claude;
 mod config;
 mod dither;
 mod fmt;
@@ -10,6 +11,8 @@ mod home;
 mod media;
 mod pages;
 mod preview;
+mod studio;
+mod studio_bridge;
 mod theme;
 mod ui;
 mod update;
@@ -30,6 +33,7 @@ const PAGE: u32 = 100;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tab {
     Home,
+    Studio,
     Posts,
     Inbox,
     Goals,
@@ -37,11 +41,12 @@ pub enum Tab {
 }
 
 impl Tab {
-    const ALL: [Tab; 5] = [Tab::Home, Tab::Posts, Tab::Inbox, Tab::Goals, Tab::Accounts];
+    const ALL: [Tab; 6] = [Tab::Home, Tab::Studio, Tab::Posts, Tab::Inbox, Tab::Goals, Tab::Accounts];
 
     fn label(self) -> &'static str {
         match self {
             Tab::Home => "Home",
+            Tab::Studio => "Studio",
             Tab::Posts => "Posts",
             Tab::Inbox => "Inbox",
             Tab::Goals => "Goals",
@@ -50,15 +55,25 @@ impl Tab {
     }
 }
 
-/// The draft open in the editor.
+/// The draft open in the Studio editor.
 pub struct DraftEdit {
     /// None while the draft has never been saved.
     pub id: Option<String>,
+    pub title: TextEdit,
     pub text: TextEdit,
+    /// Optional per-platform copy overrides keyed by platform name.
+    pub platform_text: HashMap<String, TextEdit>,
+    /// Which copy tab is active in the editor ("core" or a platform name).
+    pub active_copy_tab: String,
+    /// YouTube privacy status ("public", "unlisted", "private").
+    pub youtube_visibility: String,
     pub accounts: Vec<String>,
     /// Publishing is public, so the button asks once more before it sends.
     pub confirming: bool,
+    pub show_schedule: bool,
+    pub schedule_input: TextEdit,
     pub media: Vec<media::Item>,
+    pub cover: Option<media::Cover>,
     /// The attachment being cropped or trimmed.
     pub editing: Option<media::Edit>,
     /// Files are being dragged over the draft.
@@ -69,7 +84,128 @@ impl DraftEdit {
     pub fn new(id: Option<String>, text: &str, accounts: Vec<String>) -> DraftEdit {
         let mut text = TextEdit::new(text);
         text.focused = true;
-        DraftEdit { id, text, accounts, confirming: false, media: Vec::new(), editing: None, drop_over: false }
+        DraftEdit {
+            id,
+            title: TextEdit::new(""),
+            text,
+            platform_text: HashMap::new(),
+            active_copy_tab: "core".into(),
+            youtube_visibility: "unlisted".into(),
+            accounts,
+            confirming: false,
+            show_schedule: false,
+            schedule_input: TextEdit::new(""),
+            media: Vec::new(),
+            cover: None,
+            editing: None,
+            drop_over: false,
+        }
+    }
+
+    pub fn has_override(&self, platform: &str) -> bool {
+        self.platform_text.get(platform).is_some_and(|edit| !edit.text.trim().is_empty())
+    }
+
+    pub fn text_for(&self, platform: &str) -> &str {
+        self.platform_text
+            .get(platform)
+            .map(|e| e.text.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(self.text.text.as_str())
+    }
+
+    pub fn text_edit_for_tab(&self, tab: &str) -> &TextEdit {
+        if tab == "core" {
+            &self.text
+        } else {
+            self.platform_text.get(tab).unwrap_or(&self.text)
+        }
+    }
+
+    pub fn text_edit_mut_for_tab(&mut self, tab: &str) -> &mut TextEdit {
+        if tab == "core" {
+            &mut self.text
+        } else {
+            self.platform_text.entry(tab.to_string()).or_insert_with(|| TextEdit::new(""))
+        }
+    }
+
+    /// Pre-flight check matching `shared/drafts.ts`, so live previews flag issues before publishing.
+    pub fn live_issue(&self, account: &Json) -> Option<String> {
+        let platform = account["platform"].as_str().unwrap_or("");
+        let label = theme::platform_label(platform);
+        if account["source"] == "demo" {
+            return Some("Demo accounts can't post.".into());
+        }
+        if account["status"] == "reconnect" {
+            return Some(format!("Sign in to {label} again."));
+        }
+        let body = self.text_for(platform).trim();
+        let len = body.chars().count();
+        if len == 0 && self.media.is_empty() {
+            return Some("Write something first.".into());
+        }
+        let limit = match platform {
+            "x" => Some(280),
+            "linkedin" => Some(3000),
+            "instagram" => Some(2200),
+            _ => None,
+        };
+        if let Some(limit) = limit {
+            if len > limit {
+                return Some(format!("{} over {label}'s {limit} char limit.", len - limit));
+            }
+        }
+        let videos = self.media.iter().filter(|m| m.kind == media::Kind::Video).count();
+        if matches!(platform, "tiktok" | "youtube") {
+            if videos == 0 {
+                return Some(format!("{label} needs a video."));
+            }
+            if self.media.len() > 1 {
+                return Some(format!("{label} takes one video on its own."));
+            }
+        }
+        if platform == "instagram" && self.media.is_empty() {
+            return Some("Instagram needs an image or a video.".into());
+        }
+        if platform == "youtube" {
+            let title = self.title.text.trim();
+            if body.contains('<') || body.contains('>') || title.contains('<') || title.contains('>') {
+                return Some("YouTube doesn't allow < or >.".into());
+            }
+            if title.chars().count() > 100 {
+                return Some("YouTube titles take up to 100 chars.".into());
+            }
+        }
+        None
+    }
+
+    pub fn to_save_json(&self) -> Json {
+        let mut overrides = serde_json::Map::new();
+        for (platform, edit) in &self.platform_text {
+            if !edit.text.trim().is_empty() {
+                overrides.insert(platform.clone(), json!(edit.text.clone()));
+            }
+        }
+        let title = self.title.text.trim();
+        let mut draft = json!({
+            "title": if title.is_empty() { Json::Null } else { json!(title) },
+            "text": self.text.text.clone(),
+            "platformText": if overrides.is_empty() { Json::Null } else { Json::Object(overrides) },
+            "youtubeVisibility": self.youtube_visibility.clone(),
+            "accountIds": self.accounts,
+            "cover": match self.cover.as_ref().and_then(|c| c.storage_id.as_deref()) {
+                Some(id) => json!(id),
+                None => Json::Null,
+            },
+        });
+        if let Some(id) = &self.id {
+            draft["draftId"] = json!(id);
+        }
+        if let Some(records) = media::records(self) {
+            draft["media"] = json!(records);
+        }
+        draft
     }
 }
 
@@ -91,6 +227,8 @@ pub struct App {
     /// The Posts tab shows what is published or what is still a draft.
     pub show_drafts: bool,
     pub draft: Option<DraftEdit>,
+    /// Embedded Claude Code Studio state.
+    pub studio: studio::StudioState,
     pub inbox_open_only: bool,
     pub reply_to: Option<String>,
     pub reply: TextEdit,
@@ -197,6 +335,7 @@ fn init() -> App {
         posts_filter: "all".into(),
         show_drafts: false,
         draft: None,
+        studio: studio::StudioState::new(),
         inbox_open_only: true,
         reply_to: None,
         reply: TextEdit::new(""),
@@ -211,7 +350,6 @@ fn init() -> App {
         update: update::State::Current,
         update_checked: fmt::now_ms(),
     };
-    // A saved dashboard, for rendering without a network (headless snapshots, tests).
     if let Some(path) = std::env::var_os("BUDDYSOCIALS_FIXTURE") {
         if let Some(data) = std::fs::read(path).ok().and_then(|raw| serde_json::from_slice(&raw).ok()) {
             app.data = data;
@@ -227,10 +365,10 @@ fn init() -> App {
 fn setup(s: &mut App, wake: rune::Waker) {
     s.jobs.set_waker(wake.clone());
     s.thumbs.set_waker(wake.clone());
+    s.studio.runner.set_waker(wake.clone());
     if std::env::var_os("BUDDYSOCIALS_FIXTURE").is_some() {
         return;
     }
-    // The last dashboard is on disk, so the window opens with numbers while the live ones load.
     if auth::load().is_some() {
         if let Some(data) = cache_path().and_then(|path| std::fs::read(path).ok()).and_then(|raw| serde_json::from_slice(&raw).ok()) {
             s.data = data;
@@ -250,8 +388,7 @@ fn save_cache(data: &HashMap<String, Json>) {
     });
 }
 
-/// Folds what the backend sent into state and keeps its subscriptions in step.
-/// Returns whether anything visible changed and the links to open in the browser.
+/// Folds what the backend and Claude Code sent into state and keeps subscriptions in step.
 fn absorb(s: &mut App) -> (bool, Vec<String>) {
     let fixture = s.backend.is_none();
     let mut changed = false;
@@ -274,7 +411,6 @@ fn absorb(s: &mut App) -> (bool, Vec<String>) {
                     }
                 }
                 if matches!(auth, AuthState::SignedIn { .. }) && !matches!(s.auth, AuthState::SignedIn { .. }) {
-                    // Lets other ways in (the MCP server) find this person by email.
                     s.mutate("profiles:ensure", json!({}));
                 }
                 s.auth = auth;
@@ -286,9 +422,32 @@ fn absorb(s: &mut App) -> (bool, Vec<String>) {
             }
             Event::Notice(message) => s.notice = Some(message),
             Event::Uploaded { key, result } => media::uploaded(s, key, result),
+            Event::CoverUploaded { key, result } => media::cover_uploaded(s, key, result),
             Event::Downloaded { key, result } => media::downloaded(s, key, result),
+            Event::DraftSaved(id) => {
+                if let Some(edit) = &mut s.draft {
+                    if edit.id.is_none() {
+                        edit.id = Some(id);
+                    }
+                }
+            }
+            Event::BridgeReady(info) => s.studio.bridge = Some(info),
+            Event::StudioApplyDraft(patch) => {
+                studio::apply_patch(s, patch);
+                s.tab = Tab::Studio;
+            }
+            Event::StudioOpenDraft(draft_id) => {
+                studio::open_draft_by_id(s, &draft_id);
+                s.tab = Tab::Studio;
+            }
+            Event::StudioAttachUploaded { path, record, as_cover } => {
+                media::attach_uploaded(s, path, record, as_cover);
+                if let Some(edit) = &s.draft {
+                    let payload = edit.to_save_json();
+                    s.send(Cmd::SaveDraft { draft: payload, quiet: true });
+                }
+            }
             Event::UpdateAvailable(latest) => {
-                // A check that lands while an update is going in doesn't restart it.
                 if matches!(s.update, update::State::Current | update::State::Available(_)) {
                     s.update = update::State::Available(latest);
                 }
@@ -304,17 +463,20 @@ fn absorb(s: &mut App) -> (bool, Vec<String>) {
     }
     changed |= media::absorb(s);
     changed |= preview::absorb(s);
-    if s.tab == Tab::Posts && s.show_drafts {
-        // Without a running backend the window is drawn once, so its pictures have to be there already.
+    changed |= studio::absorb_claude(s);
+    if (s.tab == Tab::Posts && s.show_drafts) || s.tab == Tab::Studio {
         preview::sync(s, fixture);
+    }
+    if s.tab == Tab::Studio && s.draft.is_none() && matches!(s.auth, AuthState::SignedIn { .. }) {
+        studio::ensure_draft(s);
     }
     if new_data && matches!(s.auth, AuthState::SignedIn { .. }) {
         save_cache(&s.data);
     }
     if !fixture {
+        studio::sync_snapshot(s);
         let wanted = if matches!(s.auth, AuthState::SignedIn { .. }) { s.queries() } else { Vec::new() };
         if wanted != s.wanted {
-            // Results of queries no longer wanted would only go stale.
             let keys: Vec<String> = wanted.iter().map(QuerySpec::key).collect();
             s.data.retain(|key, _| keys.contains(key));
             s.send(Cmd::Subscribe(wanted.clone()));
@@ -333,16 +495,13 @@ fn poll(s: &mut App, _clock: f64, tx: &mut Tx) -> bool {
         }
     }
     if s.backend.is_some() {
-        // Relative times ("updated 5m") and the day's queries follow the clock.
         tx.wake_after(Duration::from_secs(30));
-        // The backend checks once when it starts; an app left open asks again a few times a day.
         if s.now - s.update_checked > 6.0 * HOUR_MS {
             s.update_checked = s.now;
             s.send(Cmd::CheckUpdate);
         }
     }
     if let update::State::Ready(relaunch) = &s.update {
-        // The new build is in place: start it and make room.
         match relaunch.start() {
             Ok(()) => std::process::exit(0),
             Err(_) => {
@@ -355,9 +514,6 @@ fn poll(s: &mut App, _clock: f64, tx: &mut Tx) -> bool {
     changed
 }
 
-/// `--fetch FILE`: without a window, signs in if needed (printing the link to open), loads
-/// every query the dashboard uses and writes them to FILE. End-to-end checks run this, then
-/// render the result with `BUDDYSOCIALS_FIXTURE=FILE`.
 fn fetch(path: &str) -> Result<(), String> {
     let mut app = init();
     app.backend = Some(Backend::start(std::sync::Arc::new(|| {})));
@@ -381,7 +537,6 @@ fn fetch(path: &str) -> Result<(), String> {
             AuthState::SignedIn { .. } => {
                 let complete = !app.wanted.is_empty() && app.wanted.iter().all(|spec| app.data.contains_key(&spec.key()));
                 settled = if complete { settled + 1 } else { 0 };
-                // The layout decides further queries, so wait until the set stops growing.
                 if settled >= 4 {
                     let raw = serde_json::to_vec(&app.data).map_err(|e| e.to_string())?;
                     std::fs::write(path, raw).map_err(|e| e.to_string())?;
@@ -395,7 +550,6 @@ fn fetch(path: &str) -> Result<(), String> {
     Err("timed out".into())
 }
 
-/// Runs `absorb` until `done` says so. False when the time runs out.
 fn wait_for(app: &mut App, seconds: u64, done: impl Fn(&App) -> bool) -> bool {
     let started = std::time::Instant::now();
     while started.elapsed() < Duration::from_secs(seconds) {
@@ -411,9 +565,6 @@ fn wait_for(app: &mut App, seconds: u64, done: impl Fn(&App) -> bool) -> bool {
     false
 }
 
-/// `--check-media FILE`: without a window, with the stored sign-in, attaches FILE to a new draft
-/// through the same code the window runs, edits it, saves the draft, then deletes everything
-/// it made. Each line it prints is one step that worked.
 fn check_media(path: &str) -> Result<(), String> {
     let settled = |app: &App| app.draft.as_ref().is_some_and(|draft| !media::working(draft) || draft.media.iter().any(|item| item.error.is_some()));
     let first = |app: &App| -> Result<Json, String> {
@@ -467,7 +618,6 @@ fn check_media(path: &str) -> Result<(), String> {
         return Err(format!("the saved draft has the wrong attachment: {}", stored["media"]));
     }
     println!("SAVED draft with {} attachment, issues: {}", stored["media"].as_array().map(Vec::len).unwrap_or(0), stored["targets"]);
-    // The file the draft holds is no longer unused; the first upload still is when an edit replaced it.
     let expected = if kept["storageId"] == uploaded["storageId"] { before } else { before + 1.0 };
     if !wait_for(&mut app, 20, |app| unused(app) == Some(expected)) {
         return Err(format!("unused files should be {expected}, found {:?}", unused(&app)));
@@ -497,7 +647,6 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         AuthState::SignedOut | AuthState::WaitingForBrowser => sign_in(s),
         AuthState::SignedIn { .. } => shell(s, cx),
     };
-    // The window's buttons are drawn over the content, so the content starts below them.
     col()
         .w_full()
         .h_full()
@@ -526,6 +675,7 @@ fn sign_in(s: &App) -> El {
 fn shell(s: &App, cx: &mut Cx<App>) -> El {
     let page = match s.tab {
         Tab::Home => home::view(s, cx),
+        Tab::Studio => studio::view(s),
         Tab::Posts => pages::posts(s),
         Tab::Inbox => pages::inbox(s),
         Tab::Goals => pages::goals(s),
@@ -551,6 +701,11 @@ fn shell(s: &App, cx: &mut Cx<App>) -> El {
 
 fn sidebar(s: &App) -> El {
     let open = s.query("comments:openSummary", json!({})).and_then(|summary| summary["count"].as_f64()).unwrap_or(0.0);
+    let waiting_drafts = s
+        .query("drafts:list", json!({}))
+        .and_then(Json::as_array)
+        .map(|drafts| drafts.iter().filter(|d| d["status"] != "published").count())
+        .unwrap_or(0);
     let mut nav = col().key("nav").w(184.0).h_full();
     for tab in Tab::ALL {
         let active = s.tab == tab;
@@ -565,8 +720,16 @@ fn sidebar(s: &App) -> El {
             .center_y()
             .fill(if active { theme::coral() } else { theme::BG })
             .cursor(rune::Cursor::Pointer)
-            .on_press(move |s: &mut App| s.tab = tab)
+            .on_press(move |s: &mut App| {
+                s.tab = tab;
+                if tab == Tab::Studio {
+                    studio::ensure_draft(s);
+                }
+            })
             .child(text(tab.label().to_uppercase()).font(theme::label(12.0)).color(ink));
+        if tab == Tab::Studio && waiting_drafts > 0 {
+            item = item.child(text(format!("{waiting_drafts}")).font(theme::label(11.0)).color(if active { theme::BG } else { theme::coral() }));
+        }
         if tab == Tab::Inbox && open > 0.0 {
             let count = if open >= 100.0 { "99+".to_string() } else { format!("{open}") };
             item = item.child(text(count).font(theme::label(11.0)).color(if active { theme::BG } else { theme::coral() }));
@@ -635,28 +798,22 @@ fn main() {
         ],
         families: ("IBM Plex Mono", "IBM Plex Mono"),
         scenes: &[
+            ("studio", studio::sample_scene),
             ("posts", |s| s.tab = Tab::Posts),
             ("drafts", |s| {
                 s.tab = Tab::Posts;
                 s.show_drafts = true;
                 preview::sync(s, true);
             }),
-            ("draft-editor", |s| {
-                s.tab = Tab::Posts;
-                s.show_drafts = true;
-                let accounts = s.accounts().iter().filter(|a| a["platform"] == "linkedin" || a["platform"] == "x").filter_map(|a| a["_id"].as_str().map(str::to_string)).collect();
-                s.draft = Some(DraftEdit::new(None, "Shipping the desktop app this week. Same dashboard, bigger screen.", accounts));
-            }),
+            ("draft-editor", studio::sample_scene),
             ("media-editor", |s| {
-                s.tab = Tab::Posts;
-                s.show_drafts = true;
+                s.tab = Tab::Studio;
                 let accounts = s.accounts().iter().filter(|a| a["platform"] == "linkedin" || a["platform"] == "x").filter_map(|a| a["_id"].as_str().map(str::to_string)).collect();
                 s.draft = Some(DraftEdit::new(None, "Shipping the desktop app this week. Same dashboard, bigger screen.", accounts));
                 media::sample(s);
             }),
             ("draft-media", |s| {
-                s.tab = Tab::Posts;
-                s.show_drafts = true;
+                s.tab = Tab::Studio;
                 let accounts = s.accounts().iter().filter(|a| a["platform"] == "linkedin" || a["platform"] == "x").filter_map(|a| a["_id"].as_str().map(str::to_string)).collect();
                 s.draft = Some(DraftEdit::new(None, "Shipping the desktop app this week. Same dashboard, bigger screen.", accounts));
                 media::sample(s);
@@ -678,7 +835,7 @@ fn main() {
         ],
         setup: Some(setup),
         poll: Some(poll),
-        ..AppSpec::new("BuddySocials", (1180.0, 760.0), init, view)
+        ..AppSpec::new("BuddySocials", (1280.0, 800.0), init, view)
     });
 }
 

@@ -6,18 +6,29 @@ export const TEXT_LIMIT: Partial<Record<Platform, number>> = { x: 280, linkedin:
 /** Platforms a draft can be published to. */
 export const CAN_POST: readonly Platform[] = ["linkedin", "x", "instagram", "tiktok", "youtube"];
 
-/** How a YouTube upload is shown. Change it on YouTube once the video is up. */
-export const YOUTUBE_VISIBILITY = "unlisted" as const;
+/** How a YouTube upload is shown by default. Can be overridden per draft before or after upload. */
+export const YOUTUBE_VISIBILITIES = ["public", "unlisted", "private"] as const;
+export type YoutubeVisibility = (typeof YOUTUBE_VISIBILITIES)[number];
+export const YOUTUBE_VISIBILITY: YoutubeVisibility = "unlisted";
 /** YouTube's longest title, in characters, and its longest description, in UTF-8 bytes. */
 export const YOUTUBE_TITLE_LIMIT = 100;
 export const YOUTUBE_DESCRIPTION_BYTES = 5000;
 
-/** The video's title on YouTube: the draft's first line, or a plain fallback when the draft has no text. */
-export function youtubeTitle(text: string, filename?: string): string {
+export type PlatformTextMap = Partial<Record<Platform, string>>;
+
+/** Resolves the text that goes to one platform: its override when non-empty, otherwise the core draft text. */
+export function textForPlatform(text: string, platform: Platform, platformText?: Record<string, string> | null): string {
+  const override = platformText?.[platform];
+  return typeof override === "string" && override.trim().length > 0 ? override : text;
+}
+
+/** The video's title on YouTube: explicit title if set, else the draft's first line, else filename fallback. */
+export function youtubeTitle(text: string, filename?: string, customTitle?: string | null): string {
+  const explicit = customTitle?.trim() ?? "";
   const line = text.trim().split("\n")[0]?.trim() ?? "";
   // YouTube refuses angle brackets; the text itself is checked before publishing, a file name isn't.
   const name = filename?.replace(/\.[^.]+$/, "").replace(/[<>]/g, "").trim() ?? "";
-  const title = line || name || "New video";
+  const title = explicit || line || name || "New video";
   return [...title].slice(0, YOUTUBE_TITLE_LIMIT).join("");
 }
 
@@ -150,13 +161,17 @@ export function postingIssues(
   account: AccountForPosting,
   text: string,
   media: readonly DraftMediaInfo[],
-  { permissions = true }: { permissions?: boolean } = {},
+  {
+    permissions = true,
+    platformText,
+    title,
+  }: { permissions?: boolean; platformText?: Record<string, string> | null; title?: string | null } = {},
 ): string[] {
   const label = PLATFORM_LABEL[account.platform];
   const blocked = accountIssues(account, { permissions });
   if (blocked.length > 0) return blocked;
   const issues: string[] = [];
-  const trimmed = text.trim();
+  const trimmed = textForPlatform(text, account.platform, platformText).trim();
   const length = [...trimmed].length;
   if (length === 0 && media.length === 0) issues.push("Write something first.");
   const limit = TEXT_LIMIT[account.platform];
@@ -165,7 +180,11 @@ export function postingIssues(
   else issues.push(...mediaIssues(account.platform, media));
   if (account.platform === "instagram" && media.length === 0) issues.push("Instagram needs an image or a video.");
   if (account.platform === "youtube") {
-    if (/[<>]/.test(trimmed)) issues.push("YouTube doesn't allow < or > in a title or description.");
+    const cleanTitle = title?.trim() ?? "";
+    if (/[<>]/.test(trimmed) || /[<>]/.test(cleanTitle)) issues.push("YouTube doesn't allow < or > in a title or description.");
+    if ([...cleanTitle].length > YOUTUBE_TITLE_LIMIT) {
+      issues.push(`YouTube titles take up to ${YOUTUBE_TITLE_LIMIT} characters.`);
+    }
     const bytes = new TextEncoder().encode(trimmed).byteLength;
     if (bytes > YOUTUBE_DESCRIPTION_BYTES) issues.push(`YouTube descriptions take up to ${YOUTUBE_DESCRIPTION_BYTES} bytes. Shorten the text.`);
   }

@@ -62,18 +62,47 @@ try {
   check(init.body.result.protocolVersion === "2025-06-18" && init.body.result.capabilities.tools, "initialize answers with the tools capability");
   const listed = await rpc("tools/list");
   const names = listed.body.result.tools.map((entry: { name: string }) => entry.name);
-  check(["list_accounts", "list_drafts", "save_draft", "delete_draft", "publish_draft", "publish_post"].every((name) => names.includes(name)), "all six tools are listed");
+  check(
+    [
+      "list_accounts",
+      "list_drafts",
+      "get_draft",
+      "save_draft",
+      "delete_draft",
+      "schedule_draft",
+      "publish_draft",
+      "publish_post",
+      "update_youtube_video",
+      "list_posts",
+      "list_comments",
+      "get_overview",
+    ].every((name) => names.includes(name)),
+    "all Studio and publishing tools are listed",
+  );
 
   const accounts = await tool("list_accounts");
   check(!accounts.error && accounts.value.length > 0, `list_accounts returns the owner's ${accounts.value.length} accounts`);
   const target = accounts.value.find((account: { platform: string }) => account.platform === "linkedin") ?? accounts.value[0];
 
+  const posts = await tool("list_posts", { limit: 5 });
+  check(!posts.error && Array.isArray(posts.value), "list_posts returns recent published posts");
+  const overview = await tool("get_overview", { days: 7 });
+  check(!overview.error && Array.isArray(overview.value.days), "get_overview returns daily metrics");
+
   const marker = `MCP check ${Date.now()}`;
-  const saved = await tool("save_draft", { text: marker, account_ids: [target.accountId] });
-  check(!saved.error && typeof saved.value.draft_id === "string", "save_draft creates a draft");
+  const saved = await tool("save_draft", {
+    title: "MCP Check Title",
+    text: marker,
+    platform_text: { [target.platform]: `${marker} tailored` },
+    youtube_visibility: "public",
+    account_ids: [target.accountId],
+  });
+  check(!saved.error && typeof saved.value.draft_id === "string", "save_draft creates a draft with title & platform_text");
   try {
     const updated = await tool("save_draft", { text: `${marker} (edited)`, account_ids: [target.accountId], draft_id: saved.value.draft_id });
     check(!updated.error && updated.value.draft_id === saved.value.draft_id, "save_draft with draft_id updates the same draft");
+    const got = await tool("get_draft", { draft_id: saved.value.draft_id });
+    check(!got.error && got.value.title === "MCP Check Title" && got.value.text === `${marker} (edited)`, "get_draft returns the saved draft");
     const drafts = await tool("list_drafts");
     const mine = drafts.value.find((draft: { _id: string }) => draft._id === saved.value.draft_id);
     check(mine?.text === `${marker} (edited)` && mine.status === "draft" && mine.targets[0].accountId === target.accountId, "list_drafts shows it, unpublished, with its target");

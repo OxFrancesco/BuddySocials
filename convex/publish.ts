@@ -10,10 +10,11 @@ import {
 } from "@opencoredev/social-sdk";
 import { v } from "convex/values";
 import { PLATFORM_LABEL } from "../shared/platforms";
-import { YOUTUBE_VISIBILITY, youtubeTitle } from "../shared/drafts";
+import { textForPlatform, YOUTUBE_VISIBILITY, youtubeTitle } from "../shared/drafts";
 import { internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
-import { internalAction, type ActionCtx } from "./_generated/server";
+import { action, internalAction, type ActionCtx } from "./_generated/server";
+import { requireOwner } from "./lib/owner";
 import { jpegSize } from "./social/probe";
 import { sendToTikTokInbox } from "./social/tiktokInbox";
 import { adapterFor, socialFor } from "./social/client";
@@ -86,16 +87,17 @@ async function sendToTikTok(ctx: ActionCtx, loaded: Loaded, draft: Doc<"drafts">
   };
 }
 
-/** Uploads the draft's video to YouTube, unlisted, titled with the draft's first line. */
+/** Uploads the draft's video to YouTube using the draft's chosen visibility and title. */
 async function sendToYouTube(ctx: ActionCtx, loaded: Loaded, draft: Doc<"drafts">, accountRef: ConnectedAccountRef): Promise<DeliveryOutcome> {
   const video = draft.media[0];
   if (video === undefined || video.kind !== "video") throw new Error("YouTube needs a video.");
   if (loaded.credential === null) throw new Error("Sign in to YouTube again, then publish.");
   const sourceUrl = await ctx.storage.getUrl(video.storageId);
   if (sourceUrl === null) throw missing();
-  const text = draft.text.trim();
+  const text = textForPlatform(draft.text, "youtube", draft.platformText).trim();
+  const visibility = draft.youtubeVisibility ?? YOUTUBE_VISIBILITY;
   const videoId = await uploadToYouTube(
-    { sourceUrl, byteSize: video.byteSize, mimeType: video.mimeType, title: youtubeTitle(text, video.filename), description: text, visibility: YOUTUBE_VISIBILITY },
+    { sourceUrl, byteSize: video.byteSize, mimeType: video.mimeType, title: youtubeTitle(text, video.filename, draft.title), description: text, visibility },
     loaded.credential.accessToken,
   );
   // The video is up either way; a cover YouTube refuses is no reason to call the post failed.
@@ -132,10 +134,14 @@ async function publishWithSdk(ctx: ActionCtx, { account, social }: Loaded, draft
       media.push(attachment);
     }
   }
-  const text = draft.text.trim();
+  const text = textForPlatform(draft.text, account.platform, draft.platformText).trim();
   const targetOptions =
     account.platform === "youtube"
-      ? { title: youtubeTitle(text, draft.media[0]?.filename), visibility: YOUTUBE_VISIBILITY, madeForKids: false }
+      ? {
+          title: youtubeTitle(text, draft.media[0]?.filename, draft.title),
+          visibility: draft.youtubeVisibility ?? YOUTUBE_VISIBILITY,
+          madeForKids: false,
+        }
       : undefined;
   const request: PublishRequest = {
     targets: [{ account: accountRef, ...(targetOptions ? { options: targetOptions } : {}) }],
@@ -292,5 +298,26 @@ export const updateYouTube = internalAction({
       console.error("update youtube", videoId, String(error));
       return errorMessage(error).message;
     }
+  },
+});
+
+/** Public action for the desktop and mobile apps to update a published YouTube video's visibility, title, or description. */
+export const updateYouTubePost = action({
+  args: {
+    accountId: v.id("accounts"),
+    videoId: v.string(),
+    visibility: v.optional(v.union(v.literal("public"), v.literal("unlisted"), v.literal("private"))),
+    title: v.optional(v.string()),
+    description: v.optional(v.string()),
+  },
+  handler: async (ctx, { accountId, videoId, ...change }): Promise<null> => {
+    const owner = await requireOwner(ctx);
+    const loaded = await load(ctx, accountId);
+    if (loaded === null || loaded.account.owner !== owner || loaded.account.platform !== "youtube") {
+      throw new Error("YouTube account not found.");
+    }
+    if (loaded.credential === null) throw new Error("Sign in to YouTube again.");
+    await updateYouTubeVideo(videoId, change, loaded.credential.accessToken);
+    return null;
   },
 });
