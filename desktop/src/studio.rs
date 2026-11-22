@@ -1,88 +1,176 @@
-//! BuddySocials Studio: the dedicated Idea → Final Post workbench.
+//! BuddySocials Studio: the Idea → Final Post workbench.
 //!
-//! Left pane: embedded local Claude Code collaborator (same stream-json + session resume
-//! + loopback MCP bridge pattern as T3 Code), with model/mode/folder controls, starter ideas,
-//! streaming responses, and live tool-activity cards.
-//! Right pane: live multi-platform post composer with per-platform copy tabs, YouTube title &
-//! visibility controls, drag-and-drop media/cover editor, live platform mock-ups, scheduling,
-//! and direct publishing / per-account retry / YouTube Go-Public controls.
+//! A modular row of panels the user arranges: the embedded Claude Code conversation (one
+//! continuous session, same stream-json + `--resume` + loopback MCP bridge pattern as T3
+//! Code), the post editor, and live platform previews. Each panel can be moved left or right,
+//! hidden, and resized by dragging the divider; the arrangement is remembered on disk.
 
 use std::path::PathBuf;
 
-use rune::{Cursor, El, FileDialogOptions, ScrollSpec, TextEdit, Tx, col, el, row, text, text_input};
+use rune::{Cursor, Drag, El, FileDialogOptions, Phase, ScrollSpec, TextEdit, Tx, col, el, row, text, text_input};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value as Json, json};
 
 use crate::backend::Cmd;
 use crate::claude::{self, ChatItem, ClaudeEvent, Runner, Thread, ToolState};
 use crate::studio_bridge::{ActiveDraftSnapshot, BridgeInfo, DraftPatch, Snapshot};
-use crate::{App, DraftEdit, Tab, fmt, media, preview, theme, ui};
+use crate::{App, DraftEdit, Tab, config, fmt, media, preview, theme, ui};
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Layout {
-    Split,
-    Editor,
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum Panel {
     Claude,
+    Editor,
+    Preview,
+}
+
+impl Panel {
+    fn label(self) -> &'static str {
+        match self {
+            Panel::Claude => "Claude",
+            Panel::Editor => "Post",
+            Panel::Preview => "Preview",
+        }
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            Panel::Claude => "claude",
+            Panel::Editor => "editor",
+            Panel::Preview => "preview",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Slot {
+    pub panel: Panel,
+    pub visible: bool,
+    /// Width in points when this panel isn't the one that fills the leftover space.
+    pub width: f32,
+}
+
+/// Panels left to right. The editor fills the leftover width when shown; otherwise the last
+/// visible panel does.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Layout {
+    pub slots: Vec<Slot>,
+}
+
+const MIN_PANEL: f32 = 260.0;
+const MAX_PANEL: f32 = 1400.0;
+
+impl Default for Layout {
+    fn default() -> Self {
+        Layout {
+            slots: vec![
+                Slot { panel: Panel::Claude, visible: true, width: 420.0 },
+                Slot { panel: Panel::Editor, visible: true, width: 560.0 },
+                Slot { panel: Panel::Preview, visible: true, width: 300.0 },
+            ],
+        }
+    }
 }
 
 impl Layout {
-    fn label(self) -> &'static str {
-        match self {
-            Layout::Split => "Split",
-            Layout::Editor => "Editor",
-            Layout::Claude => "Claude",
+    fn path() -> Option<PathBuf> {
+        Some(config::data_dir()?.join("studio-layout.json"))
+    }
+
+    fn load() -> Self {
+        let mut layout: Layout = Self::path()
+            .and_then(|p| std::fs::read(p).ok())
+            .and_then(|raw| serde_json::from_slice(&raw).ok())
+            .unwrap_or_default();
+        // Keep exactly one slot per panel, whatever was on disk.
+        for panel in [Panel::Claude, Panel::Editor, Panel::Preview] {
+            if !layout.slots.iter().any(|slot| slot.panel == panel) {
+                layout.slots.push(Slot { panel, visible: true, width: 360.0 });
+            }
+        }
+        let mut seen = Vec::new();
+        layout.slots.retain(|slot| {
+            let fresh = !seen.contains(&slot.panel);
+            seen.push(slot.panel);
+            fresh
+        });
+        if !layout.slots.iter().any(|slot| slot.visible) {
+            layout = Layout::default();
+        }
+        layout
+    }
+
+    fn save(&self) {
+        let Some(path) = Self::path() else { return };
+        let Ok(raw) = serde_json::to_vec_pretty(self) else { return };
+        std::thread::spawn(move || {
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(path, raw);
+        });
+    }
+
+    fn visible(&self) -> Vec<usize> {
+        (0..self.slots.len()).filter(|&i| self.slots[i].visible).collect()
+    }
+
+    /// The slot that fills the leftover width.
+    fn filler(&self) -> Option<usize> {
+        let shown = self.visible();
+        shown.iter().copied().find(|&i| self.slots[i].panel == Panel::Editor).or_else(|| shown.last().copied())
+    }
+
+    fn index(&self, panel: Panel) -> usize {
+        self.slots.iter().position(|slot| slot.panel == panel).unwrap_or(0)
+    }
+
+    fn toggle(&mut self, panel: Panel) {
+        let i = self.index(panel);
+        let shown = self.visible().len();
+        if self.slots[i].visible && shown <= 1 {
+            return;
+        }
+        self.slots[i].visible = !self.slots[i].visible;
+        self.save();
+    }
+
+    /// Moves a panel past its next visible neighbour on that side.
+    fn shift(&mut self, panel: Panel, right: bool) {
+        let i = self.index(panel);
+        let shown = self.visible();
+        let pos = shown.iter().position(|&v| v == i);
+        let target = match (pos, right) {
+            (Some(p), true) => shown.get(p + 1).copied(),
+            (Some(p), false) if p > 0 => shown.get(p - 1).copied(),
+            _ => None,
+        };
+        if let Some(j) = target {
+            self.slots.swap(i, j);
+            self.save();
         }
     }
 }
 
 pub struct StudioState {
     pub layout: Layout,
-    pub threads: Vec<Thread>,
-    pub active_thread: usize,
+    /// The one continuous Claude Code conversation; Claude Code compacts it on its own.
+    pub thread: Thread,
     pub prompt: TextEdit,
     pub runner: Runner,
     pub bridge: Option<BridgeInfo>,
     pub has_claude: bool,
-    next_thread_id: u64,
 }
 
 impl StudioState {
     pub fn new() -> Self {
-        let mut threads = claude::load_threads();
-        if threads.is_empty() {
-            threads.push(Thread::new("t-1".into(), claude::default_cwd()));
-        }
-        let next = (threads.len() as u64) + 1;
         StudioState {
-            layout: Layout::Split,
-            threads,
-            active_thread: 0,
+            layout: Layout::load(),
+            thread: claude::load_chat(),
             prompt: TextEdit::new(""),
             runner: Runner::default(),
             bridge: None,
             has_claude: claude::find_binary().is_some(),
-            next_thread_id: next,
         }
-    }
-
-    pub fn thread(&self) -> &Thread {
-        &self.threads[self.active_thread.min(self.threads.len().saturating_sub(1))]
-    }
-
-    pub fn thread_mut(&mut self) -> &mut Thread {
-        let idx = self.active_thread.min(self.threads.len().saturating_sub(1));
-        &mut self.threads[idx]
-    }
-
-    pub fn new_thread(&mut self) {
-        self.next_thread_id += 1;
-        let cwd = self.thread().cwd.clone();
-        let id = format!("t-{}-{}", fmt::now_ms() as u64, self.next_thread_id);
-        let mut next = Thread::new(id, cwd);
-        next.model = self.thread().model;
-        next.mode = self.thread().mode;
-        self.threads.insert(0, next);
-        self.active_thread = 0;
-        claude::save_threads(&self.threads);
     }
 }
 
@@ -178,7 +266,7 @@ pub fn apply_patch(s: &mut App, patch: DraftPatch) {
         }
         edit.confirming = false;
     }
-    s.studio.thread_mut().draft_id = s.draft.as_ref().and_then(|d| d.id.clone());
+    s.studio.thread.draft_id = s.draft.as_ref().and_then(|d| d.id.clone());
 }
 
 /// Pushes current accounts, drafts, posts, comments, and the open Studio draft to the MCP bridge.
@@ -213,135 +301,111 @@ pub fn sync_snapshot(s: &App) {
     backend.set_snapshot(Snapshot { accounts, drafts, posts, comments, active_draft });
 }
 
-/// Folds streaming Claude Code events into Studio threads. Returns true if anything visible changed.
+/// Folds streaming Claude Code events into the Studio conversation. Returns true if anything visible changed.
 pub fn absorb_claude(s: &mut App) -> bool {
     let events = s.studio.runner.drain();
     if events.is_empty() {
         return false;
     }
     let mut persist = false;
+    let t = &mut s.studio.thread;
     for event in events {
         match event {
-            ClaudeEvent::Session { thread_id, session_id } => {
-                if let Some(t) = s.studio.threads.iter_mut().find(|t| t.id == thread_id) {
-                    t.session_id = Some(session_id);
-                    persist = true;
+            ClaudeEvent::Session { session_id, .. } => {
+                t.session_id = Some(session_id);
+                persist = true;
+            }
+            ClaudeEvent::TextDelta { delta, .. } => match t.items.last_mut() {
+                Some(ChatItem::Assistant { text, streaming }) if *streaming => text.push_str(&delta),
+                _ => t.items.push(ChatItem::Assistant { text: delta, streaming: true }),
+            },
+            ClaudeEvent::AssistantText { text, .. } => t.items.push(ChatItem::Assistant { text, streaming: false }),
+            ClaudeEvent::ToolStart { id, name, .. } => {
+                if let Some(ChatItem::Assistant { streaming, .. }) = t.items.last_mut() {
+                    *streaming = false;
+                }
+                if !t.items.iter().any(|item| matches!(item, ChatItem::Tool { id: existing, .. } if existing == &id)) {
+                    t.items.push(ChatItem::Tool { id, name, summary: String::new(), output: None, state: ToolState::Running });
                 }
             }
-            ClaudeEvent::TextDelta { thread_id, delta } => {
-                if let Some(t) = s.studio.threads.iter_mut().find(|t| t.id == thread_id) {
-                    match t.items.last_mut() {
-                        Some(ChatItem::Assistant { text, streaming }) if *streaming => {
-                            text.push_str(&delta);
-                        }
-                        _ => t.items.push(ChatItem::Assistant { text: delta, streaming: true }),
-                    }
+            ClaudeEvent::ToolInput { id, name, summary, .. } => {
+                if let Some(ChatItem::Tool { name: n, summary: s_out, .. }) =
+                    t.items.iter_mut().find(|item| matches!(item, ChatItem::Tool { id: existing, .. } if existing == &id))
+                {
+                    *n = name;
+                    *s_out = summary;
+                } else {
+                    t.items.push(ChatItem::Tool { id, name, summary, output: None, state: ToolState::Running });
                 }
             }
-            ClaudeEvent::AssistantText { thread_id, text } => {
-                if let Some(t) = s.studio.threads.iter_mut().find(|t| t.id == thread_id) {
-                    t.items.push(ChatItem::Assistant { text, streaming: false });
+            ClaudeEvent::ToolResult { id, output, is_error, .. } => {
+                if let Some(ChatItem::Tool { output: out_slot, state, .. }) =
+                    t.items.iter_mut().find(|item| matches!(item, ChatItem::Tool { id: existing, .. } if existing == &id))
+                {
+                    *out_slot = (!output.is_empty()).then_some(output);
+                    *state = if is_error { ToolState::Error } else { ToolState::Done };
                 }
             }
-            ClaudeEvent::ToolStart { thread_id, id, name } => {
-                if let Some(t) = s.studio.threads.iter_mut().find(|t| t.id == thread_id) {
-                    if let Some(ChatItem::Assistant { streaming, .. }) = t.items.last_mut() {
+            ClaudeEvent::Done { session_id, cost_usd, error, .. } => {
+                t.running = false;
+                if let Some(sid) = session_id {
+                    t.session_id = Some(sid);
+                }
+                if let Some(cost) = cost_usd {
+                    t.cost_usd += cost;
+                }
+                for item in &mut t.items {
+                    if let ChatItem::Assistant { streaming, .. } = item {
                         *streaming = false;
                     }
-                    if !t.items.iter().any(|item| matches!(item, ChatItem::Tool { id: existing, .. } if existing == &id)) {
-                        t.items.push(ChatItem::Tool { id, name, summary: String::new(), output: None, state: ToolState::Running });
-                    }
-                }
-            }
-            ClaudeEvent::ToolInput { thread_id, id, name, summary } => {
-                if let Some(t) = s.studio.threads.iter_mut().find(|t| t.id == thread_id) {
-                    if let Some(ChatItem::Tool { name: n, summary: s_out, .. }) = t
-                        .items
-                        .iter_mut()
-                        .find(|item| matches!(item, ChatItem::Tool { id: existing, .. } if existing == &id))
-                    {
-                        *n = name;
-                        *s_out = summary;
-                    } else {
-                        t.items.push(ChatItem::Tool { id, name, summary, output: None, state: ToolState::Running });
-                    }
-                }
-            }
-            ClaudeEvent::ToolResult { thread_id, id, output, is_error } => {
-                if let Some(t) = s.studio.threads.iter_mut().find(|t| t.id == thread_id) {
-                    if let Some(ChatItem::Tool { output: out_slot, state, .. }) = t
-                        .items
-                        .iter_mut()
-                        .find(|item| matches!(item, ChatItem::Tool { id: existing, .. } if existing == &id))
-                    {
-                        *out_slot = (!output.is_empty()).then_some(output);
-                        *state = if is_error { ToolState::Error } else { ToolState::Done };
-                    }
-                }
-            }
-            ClaudeEvent::Done { thread_id, session_id, cost_usd, error } => {
-                if let Some(t) = s.studio.threads.iter_mut().find(|t| t.id == thread_id) {
-                    t.running = false;
-                    if let Some(sid) = session_id {
-                        t.session_id = Some(sid);
-                    }
-                    if let Some(cost) = cost_usd {
-                        t.cost_usd += cost;
-                    }
-                    for item in &mut t.items {
-                        if let ChatItem::Assistant { streaming, .. } = item {
-                            *streaming = false;
-                        }
-                        if let ChatItem::Tool { state, .. } = item {
-                            if *state == ToolState::Running {
-                                *state = ToolState::Done;
-                            }
+                    if let ChatItem::Tool { state, .. } = item {
+                        if *state == ToolState::Running {
+                            *state = ToolState::Done;
                         }
                     }
-                    if let Some(err) = error {
-                        t.items.push(ChatItem::Notice { text: err, error: true });
-                    }
-                    persist = true;
                 }
+                if let Some(err) = error {
+                    t.items.push(ChatItem::Notice { text: err, error: true });
+                }
+                persist = true;
             }
         }
     }
     if persist {
-        claude::save_threads(&s.studio.threads);
+        claude::save_chat(&s.studio.thread);
     }
     true
 }
 
 fn send_prompt(s: &mut App, text_to_send: String) {
     let prompt = text_to_send.trim().to_string();
-    if prompt.is_empty() {
+    if prompt.is_empty() || s.studio.thread.running {
         return;
     }
     ensure_draft(s);
     sync_snapshot(s);
     let bridge = s.studio.bridge.clone();
     let runner = s.studio.runner.clone();
-    let thread = s.studio.thread_mut();
-    if thread.running {
-        return;
-    }
-    if thread.items.is_empty() {
-        let short: String = prompt.lines().next().unwrap_or(&prompt).chars().take(28).collect();
-        thread.title = if short.is_empty() { "Idea".into() } else { short };
-    }
+    let thread = &mut s.studio.thread;
     thread.items.push(ChatItem::User { text: prompt.clone() });
     thread.running = true;
-    let thread_id = thread.id.clone();
-    let session_id = thread.session_id.clone();
-    let cwd = thread.cwd.clone();
-    let model = thread.model;
-    let mode = thread.mode;
-    claude::save_threads(&s.studio.threads);
-    runner.send(thread_id, prompt, session_id, cwd, model, mode, bridge);
+    let (id, session, cwd, model, effort, mode) =
+        (thread.id.clone(), thread.session_id.clone(), thread.cwd.clone(), thread.model, thread.effort, thread.mode);
+    claude::save_chat(thread);
+    runner.send(id, prompt, session, cwd, model, effort, mode, bridge);
+}
+
+fn submit_prompt(s: &mut App) {
+    if s.studio.thread.running {
+        return;
+    }
+    let prompt = std::mem::take(&mut s.studio.prompt.text);
+    s.studio.prompt.clear();
+    send_prompt(s, prompt);
 }
 
 fn pick_folder(s: &mut App, tx: &mut Tx) {
-    let current = PathBuf::from(&s.studio.thread().cwd);
+    let current = PathBuf::from(&s.studio.thread.cwd);
     let options = FileDialogOptions {
         title: "Choose workspace folder for Claude Code".into(),
         directory: current.is_dir().then_some(current),
@@ -349,8 +413,8 @@ fn pick_folder(s: &mut App, tx: &mut Tx) {
     };
     tx.open_folder(options, |s: &mut App, result, _| match result {
         Ok(Some(path)) => {
-            s.studio.thread_mut().cwd = path.to_string_lossy().into_owned();
-            claude::save_threads(&s.studio.threads);
+            s.studio.thread.cwd = path.to_string_lossy().into_owned();
+            claude::save_chat(&s.studio.thread);
         }
         Ok(None) => {}
         Err(_) => s.notice = Some("Could not open the folder picker.".into()),
@@ -368,277 +432,232 @@ fn short_label(input: &str, max: usize) -> String {
     if chars.next().is_some() { format!("{}…", head.trim_end()) } else { head }
 }
 
+// ---------------------------------------------------------------- small controls
+
+/// A quiet text control: no border, dim until active.
+fn link(key: impl Into<String>, label: &str, active: bool) -> El {
+    row()
+        .key(key)
+        .role("button")
+        .label(label)
+        .h(24.0)
+        .px(6.0)
+        .center()
+        .cursor(Cursor::Pointer)
+        .hover(theme::FG.alpha(0.08))
+        .child(text(label.to_uppercase()).font(theme::label(10.0)).color(if active { theme::FG } else { theme::FAINT }))
+}
+
 // ---------------------------------------------------------------- UI: top bar
 
 fn top_bar(s: &App) -> El {
     let drafts = s.query("drafts:list", json!({})).and_then(Json::as_array).map(Vec::as_slice).unwrap_or(&[]);
     let open_id = s.draft.as_ref().and_then(|d| d.id.as_deref());
-    let mut switcher = row().gap(8.0).center_y().flex_wrap().grow(1.0).min_w(0.0);
-    switcher = switcher.child(ui::button("studio-new-draft", "+ New post", ui::Kind::Primary).on_press(new_draft));
-    for draft in drafts.iter().filter(|d| d["status"] != "published").take(4) {
+    let mut switcher = row().gap(2.0).center_y().grow(1.0).min_w(0.0);
+    switcher = switcher.child(link("studio-new-draft", "+ New", false).on_press(new_draft));
+    let open: Vec<&Json> = drafts.iter().filter(|d| d["status"] != "published").collect();
+    for draft in open.iter().take(3) {
         let id = draft["_id"].as_str().unwrap_or("").to_string();
-        let active = open_id == Some(id.as_str());
         let heading = draft["title"]
             .as_str()
             .filter(|t| !t.trim().is_empty())
             .or_else(|| draft["text"].as_str().and_then(|t| t.trim().lines().next()))
             .unwrap_or("Untitled");
-        let label = short_label(heading, 18);
-        let draft_clone = draft.clone();
-        switcher = switcher.child(ui::chip(format!("studio-pick-{id}"), &label, active).on_press(move |s: &mut App| {
-            open_saved_draft(s, &draft_clone);
-        }));
+        let draft_clone = (*draft).clone();
+        switcher = switcher.child(
+            link(format!("studio-pick-{id}"), &short_label(heading, 18), open_id == Some(id.as_str()))
+                .on_press(move |s: &mut App| open_saved_draft(s, &draft_clone)),
+        );
     }
-    if drafts.len() > 4 {
-        switcher = switcher.child(ui::button("studio-all-drafts", "All drafts", ui::Kind::Ghost).on_press(|s: &mut App| {
+    if open.len() > 3 {
+        switcher = switcher.child(link("studio-all-drafts", &format!("+{}", open.len() - 3), false).on_press(|s: &mut App| {
             s.tab = Tab::Posts;
             s.show_drafts = true;
         }));
     }
 
-    let mut layout_bar = row().gap(6.0).center_y();
-    for mode in [Layout::Split, Layout::Editor, Layout::Claude] {
-        layout_bar = layout_bar.child(ui::chip(format!("studio-layout-{}", mode.label().to_lowercase()), mode.label(), s.studio.layout == mode).on_press(move |s: &mut App| {
-            s.studio.layout = mode;
-        }));
+    let mut panels = row().gap(2.0).center_y().pl(12.0).border_sides([0.0, 0.0, 0.0, 1.0], theme::line());
+    for slot in &s.studio.layout.slots {
+        let panel = slot.panel;
+        panels = panels.child(
+            link(format!("studio-panel-toggle-{}", panel.key()), panel.label(), slot.visible)
+                .on_press(move |s: &mut App| s.studio.layout.toggle(panel)),
+        );
     }
     row()
         .key("studio-topbar")
-        .px(20.0)
-        .py(12.0)
+        .px(16.0)
+        .h(44.0)
         .gap(16.0)
         .center_y()
         .border_sides([0.0, 0.0, 1.0, 0.0], theme::line())
         .child(switcher)
-        .child(layout_bar)
+        .child(panels)
 }
 
-// ---------------------------------------------------------------- UI: Claude Code pane
+// ---------------------------------------------------------------- UI: Claude Code panel
 
 fn claude_pane(s: &App) -> El {
-    let thread = s.studio.thread();
-    let mut header_threads = row().gap(6.0).center_y().flex_wrap().grow(1.0).min_w(0.0);
-    header_threads = header_threads.child(text("CLAUDE CODE").font(theme::display(16.0)).color(theme::FG));
-    header_threads = header_threads.child(ui::button("claude-new-thread", "+ Thread", ui::Kind::Outline).on_press(|s: &mut App| {
-        s.studio.new_thread();
-    }));
-    for (idx, t) in s.studio.threads.iter().take(3).enumerate() {
-        let active = idx == s.studio.active_thread;
-        let short = short_label(&t.title, 14);
-        header_threads = header_threads.child(ui::chip(format!("claude-thread-{idx}"), &short, active).on_press(move |s: &mut App| {
-            s.studio.active_thread = idx;
-        }));
-    }
-
-    let controls = row()
-        .gap(6.0)
-        .center_y()
-        .flex_wrap()
-        .child(
-            ui::chip("claude-model", thread.model.label(), false).on_press(|s: &mut App| {
-                let next = s.studio.thread().model.next();
-                s.studio.thread_mut().model = next;
-                claude::save_threads(&s.studio.threads);
-            }),
-        )
-        .child(
-            ui::chip("claude-mode", thread.mode.label(), false).on_press(|s: &mut App| {
-                let next = s.studio.thread().mode.next();
-                s.studio.thread_mut().mode = next;
-                claude::save_threads(&s.studio.threads);
-            }),
-        )
-        .child(ui::chip("claude-cwd", &folder_label(&thread.cwd), false).on_press_tx(pick_folder));
-
-    let header = col()
-        .px(16.0)
-        .py(12.0)
-        .gap(8.0)
-        .border_sides([0.0, 0.0, 1.0, 0.0], theme::line())
-        .child(header_threads)
-        .child(controls);
-
-    // Conversation stream
-    let mut feed = col().px(16.0).py(14.0).gap(12.0);
+    let thread = &s.studio.thread;
+    let mut feed = col().px(16.0).py(16.0).gap(14.0);
     if !s.studio.has_claude {
         feed = feed.child(
-            col()
-                .padding(14.0)
-                .gap(8.0)
-                .border(2.0, theme::coral())
-                .child(text("CLAUDE CODE CLI NOT FOUND").font(theme::label(11.0)).color(theme::coral()))
-                .child(
-                    text("Install Claude Code (`claude`) and sign in once in your terminal. BuddySocials spawns your local Claude Code directly, just like T3 Code — no API key needed.")
-                        .font(theme::mono(12.0))
-                        .color(theme::DIM)
-                        .wrap(),
-                ),
+            text("Claude Code (`claude`) isn't installed. Install it and sign in once in a terminal; BuddySocials runs your local Claude Code, no API key needed.")
+                .font(theme::mono(12.0))
+                .color(theme::coral())
+                .wrap(),
         );
     } else if thread.items.is_empty() {
-        feed = feed
-            .child(text("IDEA TO POST, TOGETHER").font(theme::display(20.0)).color(theme::FG))
-            .child(
-                text("Tell Claude what you built, paste rough notes, or drop a file path. Claude reads your accounts & past posts, writes platform-tailored copy live into the editor, attaches local media, and prepares your post to publish.")
-                    .font(theme::mono(12.0))
-                    .color(theme::DIM)
-                    .wrap(),
-            );
+        feed = feed.child(
+            text("Tell Claude what you made. It writes the post straight into the editor.")
+                .font(theme::mono(12.0))
+                .color(theme::FAINT)
+                .wrap(),
+        );
         let starters = [
-            ("Turn a rough idea into posts", "Help me turn a rough idea into a multi-platform post. First check my connected accounts and recent top posts so you match my voice, then ask me what I want to share."),
-            ("Tailor this draft per platform", "Inspect my currently open draft with studio_get_context and tailor it for every selected platform (punchy <=280 char X version, structured LinkedIn post, clean Instagram caption, YouTube title+description). Update the draft directly."),
-            ("Pitch 3 ideas from my top posts", "Check my recent posts and open comments, see what resonated most, and pitch 3 sharp post ideas I could publish today."),
-            ("Review & fix my open draft", "Inspect my open draft, sharpen the hook, fix any platform issues or character limits, and update the draft directly."),
+            ("Turn an idea into a post", "Help me turn a rough idea into a multi-platform post. Check my connected accounts and recent top posts so you match my voice, then ask me what I want to share."),
+            ("Tailor the open draft per platform", "Inspect my open draft with studio_get_context and tailor it for every selected platform. Update the draft directly."),
+            ("Pitch 3 ideas from my top posts", "Check my recent posts and open comments, see what resonated, and pitch 3 sharp post ideas I could publish today."),
         ];
-        let mut starter_col = col().gap(8.0).pt(6.0);
+        let mut list = col().gap(2.0);
         for (i, (label, prompt)) in starters.into_iter().enumerate() {
-            let prompt_str = prompt.to_string();
-            starter_col = starter_col.child(
+            let prompt = prompt.to_string();
+            list = list.child(
                 row()
                     .key(format!("claude-starter-{i}"))
-                    .px(12.0)
-                    .py(10.0)
-                    .border(1.0, theme::line())
+                    .py(6.0)
+                    .gap(8.0)
+                    .center_y()
                     .cursor(Cursor::Pointer)
-                    .hover(theme::FG.alpha(0.08))
-                    .on_press(move |s: &mut App| send_prompt(s, prompt_str.clone()))
-                    .child(text(label).font(theme::mono(12.0)).color(theme::FG).wrap().grow(1.0))
-                    .child(text("→").font(theme::label(12.0)).color(theme::coral())),
+                    .hover(theme::FG.alpha(0.06))
+                    .on_press(move |s: &mut App| send_prompt(s, prompt.clone()))
+                    .child(text("→").font(theme::label(11.0)).color(theme::coral()))
+                    .child(text(label).font(theme::mono(12.0)).color(theme::DIM).wrap().grow(1.0)),
             );
         }
-        feed = feed.child(starter_col);
+        feed = feed.child(list);
     } else {
-        for (idx, item) in thread.items.iter().enumerate() {
-            match item {
-                ChatItem::User { text: body } => {
-                    feed = feed.child(
-                        col()
-                            .key(format!("msg-user-{idx}"))
-                            .padding(12.0)
-                            .gap(4.0)
-                            .border(1.0, theme::FG)
-                            .child(text("YOU").font(theme::label(9.0)).color(theme::DIM))
-                            .child(text(body.clone()).font(theme::mono(13.0)).color(theme::FG).wrap()),
-                    );
-                }
-                ChatItem::Assistant { text: body, streaming } => {
-                    let mut block = col().key(format!("msg-asst-{idx}")).gap(4.0);
-                    block = block.child(
-                        text(if *streaming { "CLAUDE · STREAMING…" } else { "CLAUDE" })
-                            .font(theme::label(9.0))
-                            .color(if *streaming { theme::coral() } else { theme::DIM }),
-                    );
-                    block = block.child(text(body.clone()).font(theme::mono(13.0)).color(theme::FG).wrap());
-                    feed = feed.child(block);
+        // Render only the tail: the conversation is continuous and can grow long.
+        let skip = thread.items.len().saturating_sub(160);
+        for (idx, item) in thread.items.iter().enumerate().skip(skip) {
+            feed = feed.child(match item {
+                ChatItem::User { text: body } => row()
+                    .key(format!("msg-user-{idx}"))
+                    .pl(10.0)
+                    .border_sides([0.0, 0.0, 0.0, 2.0], theme::coral())
+                    .child(text(body.clone()).font(theme::mono(13.0)).color(theme::FG).wrap().grow(1.0)),
+                ChatItem::Assistant { text: body, .. } => {
+                    text(body.clone()).key(format!("msg-asst-{idx}")).font(theme::mono(13.0)).color(theme::DIM).wrap()
                 }
                 ChatItem::Tool { name, summary, output, state, .. } => {
-                    let (badge, badge_color) = match state {
-                        ToolState::Running => ("RUNNING", theme::coral()),
-                        ToolState::Done => ("DONE", theme::DIM),
-                        ToolState::Error => ("ERROR", theme::coral()),
+                    let color = match state {
+                        ToolState::Running => theme::coral(),
+                        ToolState::Done => theme::FAINT,
+                        ToolState::Error => theme::coral(),
                     };
-                    let mut card = col()
-                        .key(format!("msg-tool-{idx}"))
-                        .px(10.0)
-                        .py(8.0)
-                        .gap(4.0)
-                        .border_sides([0.0, 0.0, 0.0, 2.0], if *state == ToolState::Done { theme::line() } else { theme::coral() })
-                        .fill(theme::FG.alpha(0.04))
-                        .child(
-                            row()
-                                .gap(8.0)
-                                .center_y()
-                                .child(text(badge).font(theme::label(9.0)).color(badge_color))
-                                .child(text(name.to_uppercase()).font(theme::label(10.0)).color(theme::FG).truncate().grow(1.0)),
-                        );
+                    let mut line = name.clone();
                     if !summary.is_empty() {
-                        card = card.child(text(summary.clone()).font(theme::mono(11.0)).color(theme::DIM).max_lines(2));
+                        line = format!("{line} · {summary}");
                     }
-                    if let Some(out) = output.as_ref().filter(|o| *state == ToolState::Error || o.len() < 120) {
-                        card = card.child(
-                            text(out.clone())
-                                .font(theme::mono(11.0))
-                                .color(if *state == ToolState::Error { theme::coral() } else { theme::FAINT })
-                                .max_lines(2),
-                        );
+                    if *state == ToolState::Error {
+                        if let Some(out) = output {
+                            line = format!("{line} — {out}");
+                        }
                     }
-                    feed = feed.child(card);
+                    row()
+                        .key(format!("msg-tool-{idx}"))
+                        .gap(8.0)
+                        .center_y()
+                        .child(text(if *state == ToolState::Running { "◦" } else { "·" }).font(theme::label(11.0)).color(color))
+                        .child(text(line).font(theme::mono(11.0)).color(color).truncate().grow(1.0))
                 }
-                ChatItem::Notice { text: msg, error } => {
-                    feed = feed.child(
-                        text(msg.clone())
-                            .key(format!("msg-notice-{idx}"))
-                            .font(theme::mono(12.0))
-                            .color(if *error { theme::coral() } else { theme::DIM })
-                            .wrap(),
-                    );
-                }
-            }
+                ChatItem::Notice { text: msg, error } => text(msg.clone())
+                    .key(format!("msg-notice-{idx}"))
+                    .font(theme::mono(11.0))
+                    .color(if *error { theme::coral() } else { theme::FAINT })
+                    .wrap(),
+            });
         }
         if thread.running {
-            feed = feed.child(text("CLAUDE IS WORKING…").font(theme::label(10.0)).color(theme::coral()));
+            feed = feed.child(text("WORKING…").font(theme::label(9.0)).color(theme::coral()));
         }
     }
 
-    // Bottom prompt composer
+    // Composer: input, then a quiet settings line (model · effort · access · folder).
     let running = thread.running;
-    let thread_id_stop = thread.id.clone();
-    let mut composer_actions = row().gap(8.0).center_y();
-    if thread.cost_usd > 0.0 {
-        composer_actions = composer_actions.child(text(format!("${:.3}", thread.cost_usd)).font(theme::label(9.0)).color(theme::FAINT));
-    }
-    if thread.session_id.is_some() {
-        composer_actions = composer_actions.child(text("SESSION LINKED").font(theme::label(9.0)).color(theme::FAINT));
-    }
-    composer_actions = composer_actions.child(col().grow(1.0));
-    if running {
-        composer_actions = composer_actions.child(ui::button("claude-stop", "Stop", ui::Kind::Outline).on_press(move |s: &mut App| {
-            s.studio.runner.stop(&thread_id_stop);
-        }));
-    } else {
-        composer_actions = composer_actions.child(ui::button("claude-send", "Send", ui::Kind::Primary).on_press(|s: &mut App| {
-            let prompt = std::mem::take(&mut s.studio.prompt.text);
-            s.studio.prompt.clear();
-            send_prompt(s, prompt);
-        }));
-    }
+    let settings = row()
+        .gap(2.0)
+        .center_y()
+        .flex_wrap()
+        .child(link("claude-model", thread.model.label(), true).on_press(|s: &mut App| {
+            s.studio.thread.model = s.studio.thread.model.next();
+            claude::save_chat(&s.studio.thread);
+        }))
+        .child(link("claude-effort", thread.effort.cli_name(), false).on_press(|s: &mut App| {
+            s.studio.thread.effort = s.studio.thread.effort.next();
+            claude::save_chat(&s.studio.thread);
+        }))
+        .child(link("claude-mode", thread.mode.label(), false).on_press(|s: &mut App| {
+            s.studio.thread.mode = s.studio.thread.mode.next();
+            claude::save_chat(&s.studio.thread);
+        }))
+        .child(link("claude-cwd", &folder_label(&thread.cwd), false).on_press_tx(pick_folder))
+        .child(col().grow(1.0))
+        .child(if running {
+            link("claude-stop", "Stop", true).on_press(|s: &mut App| {
+                let id = s.studio.thread.id.clone();
+                s.studio.runner.stop(&id);
+            })
+        } else {
+            link("claude-send", "Send ↵", true).on_press(submit_prompt)
+        });
 
     let composer = col()
-        .px(16.0)
-        .py(12.0)
-        .gap(10.0)
+        .px(12.0)
+        .pt(10.0)
+        .pb(8.0)
+        .gap(6.0)
         .border_sides([1.0, 0.0, 0.0, 0.0], theme::line())
         .child(
-            col().min_h(64.0).max_h(160.0).padding(10.0).border(2.0, theme::line()).child(
+            col().min_h(44.0).max_h(180.0).px(4.0).py(4.0).child(
                 text_input(&s.studio.prompt, theme::mono(13.0))
                     .key("claude-prompt")
                     .w_full()
                     .color(theme::FG)
                     .caret(theme::coral(), theme::coral().alpha(0.4))
-                    .placeholder("Describe an idea, ask Claude to tailor this post, or pass a file path…", theme::FAINT)
-                    .on_edit(|s: &mut App| &mut s.studio.prompt),
+                    .placeholder("Ask Claude…  (Shift+Return for a new line)", theme::FAINT)
+                    .on_edit(|s: &mut App| &mut s.studio.prompt)
+                    .on_submit(|s: &mut App, _| submit_prompt(s)),
             ),
         )
-        .child(composer_actions);
+        .child(settings);
 
     col()
         .key("studio-claude")
         .grow(1.0)
-        .min_w(300.0)
         .min_h(0.0)
         .h_full()
-        .child(header)
-        .child(
-            col()
-                .key("studio-claude-scroll")
-                .grow(1.0)
-                .min_h(0.0)
-                .scroll(ScrollSpec { stick_bottom: true })
-                .child(feed),
-        )
+        .child(col().key("studio-claude-scroll").grow(1.0).min_h(0.0).scroll(ScrollSpec { stick_bottom: true }).child(feed))
         .child(composer)
 }
 
-// ---------------------------------------------------------------- UI: Post Composer & Previews pane
+// ---------------------------------------------------------------- UI: preview panel
+
+fn preview_pane(s: &App) -> El {
+    let body = match &s.draft {
+        Some(edit) => preview::live_strip(s, edit),
+        None => text("Open a draft to see it on each platform.").font(theme::mono(12.0)).color(theme::FAINT),
+    };
+    col()
+        .key("studio-preview")
+        .grow(1.0)
+        .min_h(0.0)
+        .h_full()
+        .scroll(ScrollSpec { stick_bottom: false })
+        .child(col().padding(16.0).child(body))
+}
+
+// ---------------------------------------------------------------- UI: post editor panel
 
 fn text_limit(platform: &str) -> Option<usize> {
     match platform {
@@ -654,9 +673,9 @@ fn editor_pane(s: &App) -> El {
         return col()
             .grow(1.0)
             .center()
-            .gap(12.0)
-            .child(text("Start a new post or open a draft.").font(theme::mono(13.0)).color(theme::DIM))
-            .child(ui::button("studio-start-empty", "New post", ui::Kind::Primary).on_press(new_draft));
+            .gap(8.0)
+            .child(text("No post open.").font(theme::mono(12.0)).color(theme::FAINT))
+            .child(link("studio-start-empty", "+ New post", true).on_press(new_draft));
     };
 
     // Cropping or trimming takes over the right pane so the picture gets full room.
@@ -678,8 +697,8 @@ fn editor_pane(s: &App) -> El {
 
     let mut content = col()
         .px(20.0)
-        .py(18.0)
-        .gap(18.0)
+        .py(16.0)
+        .gap(14.0)
         .on_drop_files(|s: &mut App, files, _| {
             media::add(s, files);
             if let Some(draft) = &mut s.draft {
@@ -729,12 +748,12 @@ fn editor_pane(s: &App) -> El {
             row()
                 .key(format!("studio-acct-{id}"))
                 .role("button")
-                .h(32.0)
-                .px(10.0)
-                .gap(7.0)
+                .h(26.0)
+                .px(8.0)
+                .gap(6.0)
                 .center_y()
-                .fill(if chosen { theme::FG } else { theme::BG })
-                .border(2.0, if chosen { theme::FG } else { theme::line() })
+                .opacity(if chosen { 1.0 } else { 0.45 })
+                .border(1.0, if chosen { theme::FG.alpha(0.5) } else { theme::line() })
                 .cursor(Cursor::Pointer)
                 .on_press(move |s: &mut App| {
                     let Some(edit) = &mut s.draft else { return };
@@ -745,11 +764,8 @@ fn editor_pane(s: &App) -> El {
                     }
                     edit.confirming = false;
                 })
-                .child(
-                    el().size(8.0, 8.0)
-                        .fill(if chosen && platform == "x" { theme::BG } else { theme::platform_color(platform) }),
-                )
-                .child(text(format!("{} · {handle}", theme::platform_label(platform)).to_uppercase()).font(theme::label(10.0)).color(if chosen { theme::BG } else { theme::FG })),
+                .child(el().size(7.0, 7.0).fill(theme::platform_color(platform)))
+                .child(text(handle.to_string()).font(theme::mono(11.0)).color(theme::FG)),
         );
     }
     if s.accounts().is_empty() {
@@ -759,7 +775,7 @@ fn editor_pane(s: &App) -> El {
             }),
         );
     } else {
-        account_chips = account_chips.child(ui::button("studio-select-all", "All direct", ui::Kind::Ghost).on_press(|s: &mut App| {
+        account_chips = account_chips.child(link("studio-select-all", "All", false).on_press(|s: &mut App| {
             let direct: Vec<String> = s
                 .accounts()
                 .iter()
@@ -772,20 +788,15 @@ fn editor_pane(s: &App) -> El {
             }
         }));
     }
-    content = content.child(
-        col()
-            .gap(8.0)
-            .child(text("DESTINATIONS").font(theme::label(10.0)).color(theme::DIM))
-            .child(account_chips),
-    );
+    content = content.child(account_chips);
 
     // 2. YouTube controls (title + visibility) whenever YouTube is targeted
     if selected_platforms.iter().any(|p| p == "youtube") {
         let title_len = edit.title.text.trim().chars().count();
-        let mut vis_row = row().gap(6.0).center_y();
+        let mut vis_row = row().gap(2.0).center_y();
         for vis in ["public", "unlisted", "private"] {
             let v_str = vis.to_string();
-            vis_row = vis_row.child(ui::chip(format!("yt-vis-{vis}"), vis, edit.youtube_visibility == vis).on_press(move |s: &mut App| {
+            vis_row = vis_row.child(link(format!("yt-vis-{vis}"), vis, edit.youtube_visibility == vis).on_press(move |s: &mut App| {
                 if let Some(edit) = &mut s.draft {
                     edit.youtube_visibility = v_str.clone();
                     edit.confirming = false;
@@ -795,26 +806,19 @@ fn editor_pane(s: &App) -> El {
         content = content.child(
             col()
                 .key("studio-youtube")
-                .padding(12.0)
-                .gap(10.0)
-                .border(1.0, theme::line())
+                .gap(4.0)
                 .child(
-                    row()
-                        .center_y()
-                        .child(text("YOUTUBE TITLE & VISIBILITY").font(theme::label(10.0)).color(theme::DIM).grow(1.0))
-                        .child(text(format!("{title_len} / 100")).font(theme::label(10.0)).color(if title_len > 100 { theme::coral() } else { theme::FAINT })),
-                )
-                .child(
-                    row().h(34.0).px(10.0).center_y().border(1.0, theme::line()).child(
+                    row().h(34.0).gap(8.0).center_y().border_sides([0.0, 0.0, 1.0, 0.0], theme::line()).child(
                         text_input(&edit.title, theme::mono(13.0))
                             .key("studio-title")
                             .single_line()
                             .grow(1.0)
                             .color(theme::FG)
                             .caret(theme::coral(), theme::coral().alpha(0.4))
-                            .placeholder("Video title (defaults to first line of post)", theme::FAINT)
+                            .placeholder("YouTube title (defaults to the first line)", theme::FAINT)
                             .on_edit(|s: &mut App| &mut s.draft.as_mut().expect("draft open").title),
-                    ),
+                    )
+                    .child(text(format!("{title_len}/100")).font(theme::label(9.0)).color(if title_len > 100 { theme::coral() } else { theme::FAINT })),
                 )
                 .child(vis_row),
         );
@@ -827,8 +831,8 @@ fn editor_pane(s: &App) -> El {
         edit.active_copy_tab.clone()
     };
 
-    let mut tab_bar = row().gap(6.0).flex_wrap().center_y();
-    tab_bar = tab_bar.child(ui::chip("copy-tab-core", "Core", active_tab == "core").on_press(|s: &mut App| {
+    let mut tab_bar = row().gap(2.0).flex_wrap().center_y();
+    tab_bar = tab_bar.child(link("copy-tab-core", "All", active_tab == "core").on_press(|s: &mut App| {
         if let Some(edit) = &mut s.draft {
             edit.active_copy_tab = "core".into();
         }
@@ -841,7 +845,7 @@ fn editor_pane(s: &App) -> El {
         } else {
             theme::platform_label(platform).to_string()
         };
-        tab_bar = tab_bar.child(ui::chip(format!("copy-tab-{platform}"), &label, active_tab == *platform).on_press(move |s: &mut App| {
+        tab_bar = tab_bar.child(link(format!("copy-tab-{platform}"), &label, active_tab == *platform).on_press(move |s: &mut App| {
             if let Some(edit) = &mut s.draft {
                 edit.active_copy_tab = p_key.clone();
                 edit.platform_text.entry(p_key.clone()).or_insert_with(|| TextEdit::new(""));
@@ -850,7 +854,7 @@ fn editor_pane(s: &App) -> El {
     }
     if active_tab != "core" && edit.has_override(&active_tab) {
         let clear_key = active_tab.clone();
-        tab_bar = tab_bar.child(ui::button("copy-reset-core", "Reset to core", ui::Kind::Ghost).on_press(move |s: &mut App| {
+        tab_bar = tab_bar.child(col().grow(1.0)).child(link("copy-reset-core", "Use shared text", false).on_press(move |s: &mut App| {
             if let Some(edit) = &mut s.draft {
                 edit.platform_text.remove(&clear_key);
             }
@@ -859,9 +863,9 @@ fn editor_pane(s: &App) -> El {
 
     let active_edit = edit.text_edit_for_tab(&active_tab);
     let placeholder = if active_tab == "core" {
-        "Write your core post — or ask Claude Code on the left to draft & tailor it…"
+        "Write the post, or ask Claude…"
     } else {
-        "Platform-specific override (leave blank to inherit Core)"
+        "Text for this platform only (blank uses the shared text)"
     };
 
     let mut counts = row().gap(14.0).flex_wrap();
@@ -871,8 +875,8 @@ fn editor_pane(s: &App) -> El {
                 let len = edit.text_for(platform).trim().chars().count();
                 counts = counts.child(
                     text(format!("{} {len} / {limit}", theme::platform_label(platform)).to_uppercase())
-                        .font(theme::label(10.0))
-                        .color(if len > limit { theme::coral() } else { theme::DIM }),
+                            .font(theme::label(9.0))
+                        .color(if len > limit { theme::coral() } else { theme::FAINT }),
                 );
             }
         }
@@ -880,19 +884,22 @@ fn editor_pane(s: &App) -> El {
         let len = edit.text_for(&active_tab).trim().chars().count();
         counts = counts.child(
             text(format!("{} {len} / {limit}", theme::platform_label(&active_tab)).to_uppercase())
-                .font(theme::label(10.0))
-                .color(if len > limit { theme::coral() } else { theme::DIM }),
+                .font(theme::label(9.0))
+                .color(if len > limit { theme::coral() } else { theme::FAINT }),
         );
     }
 
     let active_tab_for_edit = active_tab.clone();
-    let editor_box = col()
+    let mut editor_box = col()
         .gap(10.0)
-        .padding(14.0)
-        .border(2.0, if edit.drop_over { theme::coral() } else { theme::FG })
-        .child(tab_bar)
+        .padding(if edit.drop_over { 10.0 } else { 0.0 })
+        .border(if edit.drop_over { 1.0 } else { 0.0 }, theme::coral());
+    if !selected_platforms.is_empty() {
+        editor_box = editor_box.child(tab_bar);
+    }
+    let editor_box = editor_box
         .child(
-            col().min_h(120.0).child(
+            col().min_h(160.0).child(
                 text_input(active_edit, theme::mono(14.0))
                     .key(format!("studio-text-{active_tab}"))
                     .w_full()
@@ -915,25 +922,25 @@ fn editor_pane(s: &App) -> El {
     let can_send = settled && !edit.accounts.is_empty() && has_content;
     let mut actions = row().gap(8.0).center_y().flex_wrap();
     if settled {
-        actions = actions.child(ui::button("studio-save", "Save draft", ui::Kind::Outline).on_press(|s: &mut App| {
+        actions = actions.child(ui::button("studio-save", "Save", ui::Kind::Outline).on_press(|s: &mut App| {
             if let Some(edit) = &s.draft {
                 let payload = edit.to_save_json();
                 s.send(Cmd::SaveDraft { draft: payload, quiet: false });
             }
         }));
     } else {
-        actions = actions.child(text("FINISHING UPLOADS…").font(theme::label(10.0)).color(theme::DIM));
+        actions = actions.child(text("UPLOADING…").font(theme::label(10.0)).color(theme::FAINT));
     }
     if can_send {
         actions = actions.child(
-            ui::button("studio-schedule-toggle", if edit.show_schedule { "Hide schedule" } else { "Schedule" }, ui::Kind::Outline).on_press(|s: &mut App| {
+            ui::button("studio-schedule-toggle", "Schedule", ui::Kind::Outline).on_press(|s: &mut App| {
                 if let Some(edit) = &mut s.draft {
                     edit.show_schedule = !edit.show_schedule;
                 }
             }),
         );
         actions = actions.child(
-            ui::button("studio-publish", if edit.confirming { "Confirm & post now" } else { "Publish now" }, ui::Kind::Primary).on_press(|s: &mut App| {
+            ui::button("studio-publish", if edit.confirming { "Confirm — post now" } else { "Publish" }, ui::Kind::Primary).on_press(|s: &mut App| {
                 let Some(edit) = &mut s.draft else { return };
                 if !edit.confirming {
                     edit.confirming = true;
@@ -946,7 +953,7 @@ fn editor_pane(s: &App) -> El {
         );
     }
     if let Some(id) = edit.id.clone() {
-        actions = actions.child(col().grow(1.0)).child(ui::button("studio-delete", "Delete", ui::Kind::Ghost).on_press(move |s: &mut App| {
+        actions = actions.child(col().grow(1.0)).child(link("studio-delete", "Delete", false).on_press(move |s: &mut App| {
             s.mutate("drafts:remove", json!({ "draftId": id }));
             new_draft(s);
         }));
@@ -1068,42 +1075,98 @@ fn editor_pane(s: &App) -> El {
         content = content.child(status_list);
     }
 
-    // 6. Live per-platform previews (updates on every keystroke & Claude edit!)
-    content = content.child(
-        col()
-            .gap(10.0)
-            .child(text("LIVE PLATFORM PREVIEWS").font(theme::label(10.0)).color(theme::DIM))
-            .child(preview::live_strip(s, edit)),
-    );
-
     col()
         .key("studio-editor")
         .grow(1.0)
-        .min_w(0.0)
         .min_h(0.0)
         .h_full()
         .scroll(ScrollSpec { stick_bottom: false })
         .child(content)
 }
 
+/// A panel's slim header: its name, and controls to move it left or right or hide it.
+fn panel_header(s: &App, panel: Panel) -> El {
+    let shown = s.studio.layout.visible();
+    let i = s.studio.layout.index(panel);
+    let pos = shown.iter().position(|&v| v == i).unwrap_or(0);
+    let mut bar = row()
+        .key(format!("studio-panel-head-{}", panel.key()))
+        .h(30.0)
+        .px(10.0)
+        .gap(2.0)
+        .center_y()
+        .border_sides([0.0, 0.0, 1.0, 0.0], theme::line())
+        .child(text(panel.label().to_uppercase()).font(theme::label(9.0)).color(theme::FAINT).grow(1.0));
+    if pos > 0 {
+        bar = bar.child(link(format!("studio-panel-left-{}", panel.key()), "←", false).on_press(move |s: &mut App| s.studio.layout.shift(panel, false)));
+    }
+    if pos + 1 < shown.len() {
+        bar = bar.child(link(format!("studio-panel-right-{}", panel.key()), "→", false).on_press(move |s: &mut App| s.studio.layout.shift(panel, true)));
+    }
+    if shown.len() > 1 {
+        bar = bar.child(link(format!("studio-panel-hide-{}", panel.key()), "×", false).on_press(move |s: &mut App| s.studio.layout.toggle(panel)));
+    }
+    bar
+}
+
+/// The draggable line between two neighbouring panels. Dragging resizes whichever of the two
+/// has a fixed width (the filler panel takes up the rest).
+fn divider(left: usize, right: usize, filler: Option<usize>) -> El {
+    let (target, sign) = if Some(left) == filler { (right, -1.0) } else { (left, 1.0) };
+    row()
+        .key(format!("studio-divider-{left}-{right}"))
+        .w(7.0)
+        .h_full()
+        .center()
+        .cursor(Cursor::ResizeColumn)
+        .hover(theme::FG.alpha(0.06))
+        .on_drag(move |s: &mut App, d: &mut Drag, _tx: &mut Tx| {
+            let slot = &mut s.studio.layout.slots[target];
+            match d.phase {
+                Phase::Down => d.data = slot.width,
+                Phase::Move => slot.width = (d.data + sign * d.dx).clamp(MIN_PANEL, MAX_PANEL),
+                Phase::Up => {
+                    if d.cancelled() {
+                        slot.width = d.data;
+                    }
+                    s.studio.layout.save();
+                }
+            }
+        })
+        .child(el().w(1.0).h_full().fill(theme::line()))
+}
+
 pub fn view(s: &App) -> El {
-    let body = match s.studio.layout {
-        Layout::Split => row()
-            .grow(1.0)
+    let layout = &s.studio.layout;
+    let shown = layout.visible();
+    let filler = layout.filler();
+    let mut body = row().key("studio-panels").grow(1.0).min_h(0.0);
+    for (n, &i) in shown.iter().enumerate() {
+        if n > 0 {
+            body = body.child(divider(shown[n - 1], i, filler));
+        }
+        let slot = &layout.slots[i];
+        let content = match slot.panel {
+            Panel::Claude => claude_pane(s),
+            Panel::Editor => editor_pane(s),
+            Panel::Preview => preview_pane(s),
+        };
+        let mut frame = col()
+            .key(format!("studio-panel-{}", slot.panel.key()))
+            .h_full()
             .min_h(0.0)
-            .child(col().w(420.0).min_w(320.0).h_full().child(claude_pane(s)))
-            .child(el().w(2.0).h_full().fill(theme::line()))
-            .child(col().grow(1.0).min_w(0.0).h_full().child(editor_pane(s))),
-        Layout::Claude => col().grow(1.0).min_h(0.0).child(claude_pane(s)),
-        Layout::Editor => col().grow(1.0).min_h(0.0).child(editor_pane(s)),
-    };
+            .child(panel_header(s, slot.panel))
+            .child(col().grow(1.0).min_h(0.0).child(content));
+        frame = if Some(i) == filler { frame.grow(1.0).min_w(MIN_PANEL) } else { frame.w(slot.width).min_w(MIN_PANEL) };
+        body = body.child(frame);
+    }
     col().key("studio").grow(1.0).min_h(0.0).h_full().child(top_bar(s)).child(body)
 }
 
 /// Populates a realistic Studio scene for headless screenshots (`--snap --scene studio`).
 pub fn sample_scene(s: &mut App) {
     s.tab = Tab::Studio;
-    s.studio.layout = Layout::Split;
+    s.studio.layout = Layout::default();
     s.studio.has_claude = true;
     let accounts: Vec<String> = s
         .accounts()
@@ -1123,8 +1186,7 @@ pub fn sample_scene(s: &mut App) {
     );
     s.draft = Some(edit);
 
-    let mut t = Thread::new("sample-1".into(), claude::default_cwd());
-    t.title = "Launch post".into();
+    let mut t = Thread::new("studio".into(), claude::default_cwd());
     t.session_id = Some("sess-demo".into());
     t.items = vec![
         ChatItem::User { text: "Turn our new Claude Code Studio integration into a crisp launch post tailored for X and LinkedIn.".into() },
@@ -1147,6 +1209,5 @@ pub fn sample_scene(s: &mut App) {
             streaming: false,
         },
     ];
-    s.studio.threads = vec![t];
-    s.studio.active_thread = 0;
+    s.studio.thread = t;
 }

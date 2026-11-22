@@ -31,33 +31,77 @@ Workflow:
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum Model {
-    Sonnet,
     Opus,
+    Sonnet,
     Haiku,
+}
+
+impl Default for Model {
+    fn default() -> Self {
+        Model::Opus
+    }
 }
 
 impl Model {
     pub fn next(self) -> Self {
         match self {
-            Model::Sonnet => Model::Opus,
-            Model::Opus => Model::Haiku,
-            Model::Haiku => Model::Sonnet,
+            Model::Opus => Model::Sonnet,
+            Model::Sonnet => Model::Haiku,
+            Model::Haiku => Model::Opus,
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
-            Model::Sonnet => "Sonnet",
-            Model::Opus => "Opus",
-            Model::Haiku => "Haiku",
+            Model::Opus => "Opus 5.5",
+            Model::Sonnet => "Sonnet 5.5",
+            Model::Haiku => "Haiku 5.5",
         }
     }
 
     pub fn cli_name(self) -> &'static str {
         match self {
-            Model::Sonnet => "sonnet",
-            Model::Opus => "opus",
-            Model::Haiku => "haiku",
+            Model::Opus => "claude-opus-5-5",
+            Model::Sonnet => "claude-sonnet-5-5",
+            Model::Haiku => "claude-haiku-5-5",
+        }
+    }
+}
+
+/// Claude Code's `--effort` level for the session.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum Effort {
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+}
+
+impl Default for Effort {
+    fn default() -> Self {
+        Effort::Medium
+    }
+}
+
+impl Effort {
+    pub fn next(self) -> Self {
+        match self {
+            Effort::Low => Effort::Medium,
+            Effort::Medium => Effort::High,
+            Effort::High => Effort::Xhigh,
+            Effort::Xhigh => Effort::Max,
+            Effort::Max => Effort::Low,
+        }
+    }
+
+    pub fn cli_name(self) -> &'static str {
+        match self {
+            Effort::Low => "low",
+            Effort::Medium => "medium",
+            Effort::High => "high",
+            Effort::Xhigh => "xhigh",
+            Effort::Max => "max",
         }
     }
 }
@@ -68,6 +112,12 @@ pub enum PermissionMode {
     AcceptEdits,
     Plan,
     Bypass,
+}
+
+impl Default for PermissionMode {
+    fn default() -> Self {
+        PermissionMode::Bypass
+    }
 }
 
 impl PermissionMode {
@@ -120,7 +170,11 @@ pub struct Thread {
     pub title: String,
     pub session_id: Option<String>,
     pub cwd: String,
+    #[serde(default)]
     pub model: Model,
+    #[serde(default)]
+    pub effort: Effort,
+    #[serde(default)]
     pub mode: PermissionMode,
     pub draft_id: Option<String>,
     pub items: Vec<ChatItem>,
@@ -133,11 +187,12 @@ impl Thread {
     pub fn new(id: String, cwd: String) -> Self {
         Thread {
             id,
-            title: "New idea".into(),
+            title: "Studio".into(),
             session_id: None,
             cwd,
-            model: Model::Sonnet,
-            mode: PermissionMode::Auto,
+            model: Model::default(),
+            effort: Effort::default(),
+            mode: PermissionMode::default(),
             draft_id: None,
             items: Vec::new(),
             cost_usd: 0.0,
@@ -209,6 +264,7 @@ impl Runner {
         session_id: Option<String>,
         cwd: String,
         model: Model,
+        effort: Effort,
         mode: PermissionMode,
         bridge: Option<BridgeInfo>,
     ) {
@@ -217,7 +273,7 @@ impl Runner {
         self.cancels.lock().unwrap().insert(thread_id.clone(), cancel_tx);
         let runner = self.clone();
         self.runtime.spawn(async move {
-            let outcome = run_turn(&runner, &thread_id, &prompt, session_id.as_deref(), &cwd, model, mode, bridge.as_ref(), cancel_rx).await;
+            let outcome = run_turn(&runner, &thread_id, &prompt, session_id.as_deref(), &cwd, model, effort, mode, bridge.as_ref(), cancel_rx).await;
             runner.cancels.lock().unwrap().remove(&thread_id);
             if let Err(error) = outcome {
                 runner.push(ClaudeEvent::Done { thread_id, session_id: None, cost_usd: None, error: Some(error) });
@@ -251,19 +307,45 @@ pub fn default_cwd() -> String {
     std::env::var("HOME").unwrap_or_else(|_| ".".into())
 }
 
-fn threads_path() -> Option<PathBuf> {
+fn chat_path() -> Option<PathBuf> {
+    Some(config::data_dir()?.join("studio-chat.json"))
+}
+
+/// Older builds kept several threads; the most recent one becomes the single conversation.
+fn legacy_threads_path() -> Option<PathBuf> {
     Some(config::data_dir()?.join("studio-threads.json"))
 }
 
-pub fn load_threads() -> Vec<Thread> {
-    let Some(path) = threads_path() else { return Vec::new() };
-    let Ok(raw) = std::fs::read(&path) else { return Vec::new() };
-    serde_json::from_slice(&raw).unwrap_or_default()
+/// How many chat items the conversation keeps on disk. Claude Code compacts its own context;
+/// this only bounds the transcript the app re-renders.
+const KEEP_ITEMS: usize = 400;
+
+/// Loads the one continuous Studio conversation, starting a fresh one when none exists.
+pub fn load_chat() -> Thread {
+    let read = |path: Option<PathBuf>| path.and_then(|p| std::fs::read(p).ok());
+    if let Some(thread) = read(chat_path()).and_then(|raw| serde_json::from_slice::<Thread>(&raw).ok()) {
+        return thread;
+    }
+    if let Some(mut thread) = read(legacy_threads_path())
+        .and_then(|raw| serde_json::from_slice::<Vec<Thread>>(&raw).ok())
+        .and_then(|threads| threads.into_iter().next())
+    {
+        // New defaults: Opus 5.5 at medium effort, full access.
+        thread.model = Model::default();
+        thread.effort = Effort::default();
+        thread.mode = PermissionMode::default();
+        return thread;
+    }
+    Thread::new("studio".into(), default_cwd())
 }
 
-pub fn save_threads(threads: &[Thread]) {
-    let Some(path) = threads_path() else { return };
-    let Ok(raw) = serde_json::to_vec_pretty(threads) else { return };
+pub fn save_chat(thread: &Thread) {
+    let Some(path) = chat_path() else { return };
+    let mut copy = thread.clone();
+    if copy.items.len() > KEEP_ITEMS {
+        copy.items.drain(..copy.items.len() - KEEP_ITEMS);
+    }
+    let Ok(raw) = serde_json::to_vec_pretty(&copy) else { return };
     std::thread::spawn(move || {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
@@ -338,6 +420,7 @@ async fn run_turn(
     session_id: Option<&str>,
     cwd: &str,
     model: Model,
+    effort: Effort,
     mode: PermissionMode,
     bridge: Option<&BridgeInfo>,
     mut cancel_rx: oneshot::Receiver<()>,
@@ -356,6 +439,8 @@ async fn run_turn(
         "--include-partial-messages",
         "--model",
         model.cli_name(),
+        "--effort",
+        effort.cli_name(),
         "--permission-mode",
         mode.cli_name(),
         "--append-system-prompt",
