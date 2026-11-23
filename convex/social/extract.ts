@@ -112,6 +112,22 @@ export function extractPost(platform: Platform, row: JsonObject): ExtractedPost 
         publishedAt,
       };
     }
+    case "facebook": {
+      const id = str(row["id"]);
+      const publishedAt = time(row["created_time"]);
+      if (!id || publishedAt === undefined) return null;
+      const message = str(row["message"]);
+      const status = str(row["status_type"]);
+      return {
+        platformPostId: id,
+        kind: status === "added_video" ? "video" : status === "added_photos" ? "photo" : "post",
+        title: firstLine(message),
+        text: message,
+        permalink: str(row["permalink_url"]) ?? `https://www.facebook.com/${id}`,
+        thumbnailUrl: str(row["full_picture"]),
+        publishedAt,
+      };
+    }
   }
 }
 

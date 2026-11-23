@@ -2,6 +2,7 @@
 
 import {
   connectedAccountRef,
+  platformPostRef,
   SocialError,
   type ConnectedAccountRef,
   type DeliveryOutcome,
@@ -15,8 +16,10 @@ import { internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
 import { action, internalAction, type ActionCtx } from "./_generated/server";
 import { requireOwner } from "./lib/owner";
+import { enforceRateLimit } from "./lib/rateLimits";
 import { jpegSize } from "./social/probe";
 import { sendToTikTokInbox } from "./social/tiktokInbox";
+import { publishToPage } from "./social/facebook";
 import { adapterFor, socialFor } from "./social/client";
 import { setYouTubeThumbnail, updateYouTubeVideo, uploadToYouTube } from "./social/youtubeUpload";
 import { errorMessage, load } from "./sync";
@@ -119,6 +122,36 @@ async function sendToYouTube(ctx: ActionCtx, loaded: Loaded, draft: Doc<"drafts"
   };
 }
 
+/**
+ * Posts to a Facebook Page through the Graph API. Facebook fetches each image and the video itself
+ * from its storage link, so no file passes through here.
+ */
+async function sendToFacebook(ctx: ActionCtx, loaded: Loaded, draft: Doc<"drafts">, accountRef: ConnectedAccountRef): Promise<DeliveryOutcome> {
+  if (loaded.credential === null) throw new Error("Sign in to Facebook again, then publish.");
+  const urls: string[] = [];
+  for (const item of draft.media) {
+    const url = await ctx.storage.getUrl(item.storageId);
+    if (url === null) throw missing();
+    urls.push(url);
+  }
+  const text = textForPlatform(draft.text, "facebook", draft.platformText).trim();
+  const video = draft.media[0]?.kind === "video" ? urls[0] : undefined;
+  const result = await publishToPage(loaded.account.platformAccountId, loaded.credential.accessToken, {
+    text,
+    images: video ? [] : urls,
+    ...(video ? { video: { url: video, ...(draft.title?.trim() ? { title: draft.title.trim() } : {}) } } : {}),
+  });
+  const observedAt = new Date().toISOString();
+  return {
+    state: "published",
+    targetIndex: 0,
+    account: accountRef,
+    observedAt,
+    post: platformPostRef({ ...accountRef, postId: result.postId }),
+    url: result.permalink,
+  };
+}
+
 /** Posts through the SDK and returns what the platform said about the one target. */
 async function publishWithSdk(ctx: ActionCtx, { account, social }: Loaded, draft: Doc<"drafts">, delivery: Doc<"draftDeliveries">, accountRef: ConnectedAccountRef) {
   const hasVideo = draft.media.some((item) => item.kind === "video");
@@ -200,7 +233,9 @@ export const deliver = internalAction({
           ? await sendToTikTok(ctx, loaded, draft, accountRef)
           : direct && account.platform === "youtube"
             ? await sendToYouTube(ctx, loaded, draft, accountRef)
-            : await publishWithSdk(ctx, { ...loaded, social }, draft, delivery, accountRef);
+            : direct && account.platform === "facebook"
+              ? await sendToFacebook(ctx, loaded, draft, accountRef)
+              : await publishWithSdk(ctx, { ...loaded, social }, draft, delivery, accountRef);
       // Instagram posts a video only once it has processed it, and TikTok reports a failed upload a little later,
       // so both are followed until they settle. YouTube has the video by now and finishes on its own.
       while (
@@ -317,6 +352,7 @@ export const updateYouTubePost = action({
       throw new Error("YouTube account not found.");
     }
     if (loaded.credential === null) throw new Error("Sign in to YouTube again.");
+    await enforceRateLimit(ctx, "youtubeUpdate", owner);
     await updateYouTubeVideo(videoId, change, loaded.credential.accessToken);
     return null;
   },

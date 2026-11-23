@@ -156,7 +156,7 @@ export default defineSchema({
     /** Optional working title; also used as the YouTube video title when set. */
     title: v.optional(v.string()),
     text: v.string(),
-    /** Optional per-platform copy overrides keyed by platform name (x, linkedin, instagram, tiktok, youtube). */
+    /** Optional per-platform copy overrides keyed by platform name (x, linkedin, facebook, instagram, tiktok, youtube). */
     platformText: v.optional(v.record(v.string(), v.string())),
     /** YouTube upload privacy status; defaults to unlisted when omitted. */
     youtubeVisibility: v.optional(v.union(v.literal("public"), v.literal("unlisted"), v.literal("private"))),
@@ -235,6 +235,8 @@ export default defineSchema({
     redirectUri: v.string(),
     /** Set when the desktop app started it, so the callback ends on a web page instead of the phone app. */
     client: v.optional(v.literal("desktop")),
+    /** The signed-in user's masked email, shown on the confirm page so nobody links an account into someone else's dashboard. */
+    ownerLabel: v.optional(v.string()),
     /** Set when connecting LinkedIn company Pages instead of the member profile. */
     app: v.optional(v.literal("linkedinPages")),
     createdAt: v.number(),
@@ -262,4 +264,29 @@ export default defineSchema({
     programSha256: v.string(),
     createdAt: v.number(),
   }).index("by_platform_and_createdAt", ["platform", "createdAt"]),
+
+  /**
+   * The app-scoped Meta user behind an Instagram or Facebook account. Meta's deauthorize and
+   * deletion callbacks name only that ID, which differs from the stored account or Page ID.
+   */
+  metaUsers: defineTable({
+    owner: v.string(),
+    accountId: v.id("accounts"),
+    source: v.string(),
+    metaUserId: v.string(),
+  })
+    .index("by_source_and_metaUserId", ["source", "metaUserId"])
+    .index("by_account", ["accountId"])
+    .index("by_owner", ["owner"]),
+
+  /** Data deletion requests from Meta's callback. The code is what the person sees on the status page. */
+  deletionRequests: defineTable({
+    code: v.string(),
+    /** Whose app sent it: "instagram" or "facebook". */
+    source: v.string(),
+    state: v.union(v.literal("pending"), v.literal("done")),
+    accountsFound: v.number(),
+    requestedAt: v.number(),
+    doneAt: v.optional(v.number()),
+  }).index("by_code", ["code"]),
 });

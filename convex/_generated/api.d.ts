@@ -10,6 +10,8 @@
 
 import type * as accounts from "../accounts.js";
 import type * as comments from "../comments.js";
+import type * as compliance from "../compliance.js";
+import type * as complianceNode from "../complianceNode.js";
 import type * as connect from "../connect.js";
 import type * as connectStore from "../connectStore.js";
 import type * as crons from "../crons.js";
@@ -21,7 +23,10 @@ import type * as homeWidgets from "../homeWidgets.js";
 import type * as http from "../http.js";
 import type * as ingest from "../ingest.js";
 import type * as layouts from "../layouts.js";
+import type * as lib_connectErrors from "../lib/connectErrors.js";
 import type * as lib_owner from "../lib/owner.js";
+import type * as lib_rateLimits from "../lib/rateLimits.js";
+import type * as lib_signedRequest from "../lib/signedRequest.js";
 import type * as mcp from "../mcp.js";
 import type * as media from "../media.js";
 import type * as mediaImport from "../mediaImport.js";
@@ -31,6 +36,7 @@ import type * as social_batch from "../social/batch.js";
 import type * as social_client from "../social/client.js";
 import type * as social_demo from "../social/demo.js";
 import type * as social_extract from "../social/extract.js";
+import type * as social_facebook from "../social/facebook.js";
 import type * as social_linkedinPages from "../social/linkedinPages.js";
 import type * as social_oauth from "../social/oauth.js";
 import type * as social_probe from "../social/probe.js";
@@ -48,6 +54,8 @@ import type {
 declare const fullApi: ApiFromModules<{
   accounts: typeof accounts;
   comments: typeof comments;
+  compliance: typeof compliance;
+  complianceNode: typeof complianceNode;
   connect: typeof connect;
   connectStore: typeof connectStore;
   crons: typeof crons;
@@ -59,7 +67,10 @@ declare const fullApi: ApiFromModules<{
   http: typeof http;
   ingest: typeof ingest;
   layouts: typeof layouts;
+  "lib/connectErrors": typeof lib_connectErrors;
   "lib/owner": typeof lib_owner;
+  "lib/rateLimits": typeof lib_rateLimits;
+  "lib/signedRequest": typeof lib_signedRequest;
   mcp: typeof mcp;
   media: typeof media;
   mediaImport: typeof mediaImport;
@@ -69,6 +80,7 @@ declare const fullApi: ApiFromModules<{
   "social/client": typeof social_client;
   "social/demo": typeof social_demo;
   "social/extract": typeof social_extract;
+  "social/facebook": typeof social_facebook;
   "social/linkedinPages": typeof social_linkedinPages;
   "social/oauth": typeof social_oauth;
   "social/probe": typeof social_probe;
@@ -104,4 +116,6 @@ export declare const internal: FilterApi<
   FunctionReference<any, "internal">
 >;
 
-export declare const components: {};
+export declare const components: {
+  rateLimiter: import("@convex-dev/rate-limiter/_generated/component.js").ComponentApi<"rateLimiter">;
+};

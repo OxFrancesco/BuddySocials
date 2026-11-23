@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<title>Privacy policy · BuddySocials</title>
+<meta name="description" content="What BuddySocials stores about you and your connected accounts, how it is protected, and how to delete it.">
+<link rel="icon" href="icon.png">
+<style>
+@font-face { font-family: "Chakra Petch"; src: url(fonts/ChakraPetch-Bold.woff2) format("woff2"); font-weight: 700; font-display: swap; }
+@font-face { font-family: "Plex Mono"; src: url(fonts/IBMPlexMono-Regular.woff2) format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Plex Mono"; src: url(fonts/IBMPlexMono-Bold.woff2) format("woff2"); font-weight: 700; font-display: swap; }
+:root {
+  --bg: #000;
+  --fg: #fff;
+  --coral: #d6544b;
+  --line: #292929;
+  --mute: #8c8c8c;
+  --pad: clamp(20px, 5vw, 64px);
+  --display: "Chakra Petch", system-ui, sans-serif;
+  --mono: "Plex Mono", ui-monospace, monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html { background: var(--bg); color: var(--fg); -webkit-text-size-adjust: 100%; }
+body { font: 400 15px/1.7 var(--mono); min-height: 100dvh; overflow-x: hidden; -webkit-font-smoothing: antialiased; background: var(--bg); }
+a { color: inherit; text-decoration-color: var(--coral); text-underline-offset: 3px; text-decoration-thickness: 2px; }
+a:hover { color: var(--coral); }
+::selection { background: var(--coral); color: var(--fg); }
+.wrap { width: min(820px, 100%); margin-inline: auto; padding-inline: var(--pad); }
+header { border-bottom: 2px solid var(--line); padding-block: 24px; }
+.brand { display: inline-flex; align-items: center; gap: 12px; text-decoration: none; }
+.brand img { width: 32px; height: 32px; }
+.brand span { font: 700 18px/1 var(--display); letter-spacing: 0.02em; }
+main { padding-block: clamp(48px, 10vh, 96px); }
+h1, h2 { font-family: var(--display); font-weight: 700; text-transform: uppercase; letter-spacing: -0.02em; }
+h1 { font-size: clamp(40px, 8vw, 72px); line-height: 0.95; }
+h1 em { font-style: normal; color: var(--coral); }
+h2 { font-size: clamp(22px, 3.6vw, 30px); line-height: 1.1; margin-top: 48px; padding-top: 24px; border-top: 2px solid var(--line); }
+h3 { font: 700 13px/1.4 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--mute); margin-top: 24px; }
+p, li { color: #d9d9d9; max-width: 68ch; }
+p, ul, ol { margin-top: 14px; }
+ul, ol { padding-left: 22px; }
+li + li { margin-top: 6px; }
+strong { color: var(--fg); }
+code { font-family: var(--mono); background: #141414; border: 1px solid var(--line); padding: 1px 5px; overflow-wrap: anywhere; }
+.updated { margin-top: 18px; color: var(--mute); font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; }
+.box { margin-top: 24px; border: 3px solid var(--fg); box-shadow: 6px 6px 0 var(--fg); padding: 20px; }
+.box p:first-child { margin-top: 0; }
+footer { border-top: 2px solid var(--line); padding-block: 32px 48px; }
+footer nav { display: flex; flex-wrap: wrap; gap: 12px 24px; font-weight: 700; font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; }
+footer a { text-decoration: none; border-bottom: 2px solid var(--coral); padding-bottom: 2px; }
+footer a[aria-current="page"] { color: var(--coral); }
+</style>
+</head>
+<body>
+<header><div class="wrap"><a class="brand" href="index.html"><img src="icon.png" alt=""><span>BUDDYSOCIALS</span></a></div></header>
+<main class="wrap">
+  <h1>Privacy <em>policy</em></h1>
+  <p class="updated">Last updated 23 November 2026</p>
+
+  <p>BuddySocials is run by TTFunnel, Inc. ("we"), 2810 N Church St, STE 91613, Wilmington, DE 19802, USA. This policy covers the BuddySocials Android app, the desktop app, the MCP server and this website. Questions go to <a href="mailto:privacy@ttfunnel.ai">privacy@ttfunnel.ai</a>.</p>
+
+  <p>BuddySocials shows the stats, posts and comments of the social accounts you connect, and lets you write and publish posts to them. We use your data to run those features for you. We don't sell it, we don't show ads, and we don't use it to train AI models.</p>
+
+  <h2>What we store</h2>
+
+  <h3>Your BuddySocials sign-in</h3>
+  <p>You sign in with Clerk. We keep the stable user ID Clerk gives us and your verified email address. The email lets an AI assistant you connect to the MCP server find your data.</p>
+
+  <h3>Connected accounts</h3>
+  <p>For each YouTube, Instagram, TikTok, X, LinkedIn or Facebook account you connect, we store its platform ID, handle, display name, follower count, the permissions you granted, and when it last synced.</p>
+
+  <h3>Platform tokens</h3>
+  <p>Connecting an account gives us an access token and, where the platform issues one, a refresh token. We encrypt each token with AES-256-GCM before storing it. The key is a secret on our server and never sits in the database next to the tokens. A token is decrypted only on our server, at the moment we call that platform for you. It is never sent to the apps or to anyone else.</p>
+
+  <h3>Synced data</h3>
+  <ul>
+    <li>Your posts and videos: ID, type, title, caption, link, thumbnail link and publish time.</li>
+    <li>Metrics for each post (views, likes, comments, shares, saves, reach, impressions, watch time and the other numbers the platform reports), plus a reading after each sync so we can draw growth over time.</li>
+    <li>Daily totals per account, such as views and new followers.</li>
+    <li>Comments on your posts: the commenter's name and handle, the text, the time, the like count, and any reply you send from BuddySocials.</li>
+  </ul>
+
+  <h3>Things you create</h3>
+  <ul>
+    <li>Drafts: text, per-platform text, title, YouTube visibility, the accounts they go to, a scheduled time, and the result of each publish.</li>
+    <li>Images and videos you upload for drafts, including video covers. Uploads no draft uses are deleted after the number of days you choose in settings.</li>
+    <li>Goals, your home screen layout, and settings.</li>
+    <li>Home screen widget keys. We store only a hash of each key.</li>
+  </ul>
+
+  <h3>Short-lived data</h3>
+  <p>While you connect an account we keep the sign-in attempt for up to ten minutes. When you add media by link, our server downloads that link and stores the file as an upload.</p>
+
+  <h2>Claude Code and the desktop app</h2>
+  <p>The desktop app's Studio runs Claude Code on your own computer, under your own Claude account. Your conversations with Claude stay on your computer and with Anthropic under your agreement with them. We don't receive them. BuddySocials stores only what Claude saves through the app, such as a draft, and the ID of the Claude session linked to that draft.</p>
+  <p>The desktop app keeps your sign-in in your operating system's keychain.</p>
+
+  <h2>The MCP server</h2>
+  <p>If you connect an AI assistant to the BuddySocials MCP server, you sign in to it through WorkOS AuthKit. That assistant can then read your accounts, posts, comments and drafts, and can save, schedule and publish drafts for you. It acts only for the signed-in user.</p>
+
+  <h2>How we use it</h2>
+  <ul>
+    <li>To show your stats, posts and comments in the apps and widgets.</li>
+    <li>To sync each account on a schedule, about every 30 minutes, and when you ask.</li>
+    <li>To publish posts, send replies, upload videos and change YouTube video settings when you or an assistant you connected asks.</li>
+    <li>To diagnose errors. Server logs can contain account IDs and error messages from the platforms.</li>
+  </ul>
+
+  <h2>Who processes it</h2>
+  <ul>
+    <li><strong>Convex</strong> hosts our database, file storage and server code, in the United States.</li>
+    <li><strong>Clerk</strong> runs sign-in for the apps.</li>
+    <li><strong>WorkOS</strong> runs sign-in for the MCP server.</li>
+    <li>The platforms you connect (Google/YouTube, Meta for Instagram and Facebook, TikTok, X, LinkedIn) receive the requests we make for you, under their own privacy policies.</li>
+  </ul>
+  <p>We share data with nobody else, except when the law requires it.</p>
+
+  <h2 id="google">YouTube and Google data</h2>
+  <p>BuddySocials uses YouTube API Services. By connecting a YouTube channel you agree to the <a href="https://www.youtube.com/t/terms">YouTube Terms of Service</a>, and Google's handling of your data is covered by the <a href="https://policies.google.com/privacy">Google Privacy Policy</a>.</p>
+  <p>We ask Google for your basic profile, read access to your YouTube channel and YouTube Analytics, and permission to manage your videos and comments. We use this to show your channel's stats and comments, upload videos you publish from a draft, reply to comments and change a video's title or visibility when you ask.</p>
+  <div class="box">
+    <p>BuddySocials' use and transfer to any other app of information received from Google APIs will adhere to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements.</p>
+  </div>
+  <p>We don't use Google user data for advertising, we don't sell it, and we don't let people read it except with your consent, for security, or to comply with the law. We don't use it to train AI models. YouTube data we store is refreshed on each sync. You can remove BuddySocials' access at any time on the <a href="https://myaccount.google.com/permissions">Google security settings page</a>. Disconnecting the channel in BuddySocials deletes its token and synced data from our servers.</p>
+
+  <h2 id="meta">Instagram and Facebook data</h2>
+  <p>For Instagram professional accounts we read your profile, media, insights and comments, publish posts and send comment replies. For Facebook Pages we read the Pages you manage, their posts, insights and comments, publish posts and send comment replies. You can remove BuddySocials in Instagram under Settings, Apps and websites, or in Facebook under Settings, Business integrations. When you do, Meta tells us and we delete the account's token. A deletion request sent through Meta deletes the account's data as described on the <a href="data-deletion.html">data deletion page</a>.</p>
+
+  <h2 id="tiktok">TikTok data</h2>
+  <p>With TikTok Login Kit and the Content Posting API we read your basic profile, your follower and like counts and your video list with its stats, and upload videos you publish from a draft. Your use of TikTok stays under <a href="https://www.tiktok.com/legal/terms-of-service">TikTok's Terms of Service</a> and <a href="https://www.tiktok.com/legal/privacy-policy">Privacy Policy</a>. You can remove access in the TikTok app under Settings and privacy, Security, Manage app permissions.</p>
+
+  <h2>X and LinkedIn data</h2>
+  <p>For X we read your profile, posts and their metrics, and publish posts with media. For LinkedIn we read your profile, and the Pages you administer if you connect them, and publish posts. You can remove access in each platform's connected apps settings.</p>
+
+  <h2>How long we keep it</h2>
+  <ul>
+    <li>Account data and tokens stay while the account is connected. Disconnecting an account deletes its token, posts, metrics and comments.</li>
+    <li>Unused uploads go after the number of days you set.</li>
+    <li>Deleting your BuddySocials account deletes everything listed above. Copies in database backups expire within 30 days.</li>
+  </ul>
+
+  <h2>Security</h2>
+  <p>Traffic to our servers uses HTTPS. Platform tokens are encrypted at rest. Every request is checked against your sign-in, and you can only read and change your own data.</p>
+
+  <h2>Your rights</h2>
+  <p>You can see your data in the apps, disconnect any account, and delete everything from the Accounts screen. You can also email <a href="mailto:privacy@ttfunnel.ai">privacy@ttfunnel.ai</a> to get a copy of your data, correct it or delete it. Depending on where you live, laws such as the GDPR or CCPA give you further rights, and you can complain to your data protection authority. This policy is governed by the laws of the State of Delaware, USA.</p>
+
+  <h2>Children</h2>
+  <p>BuddySocials is not for anyone under 13, or under the minimum age to use the connected platforms where you live.</p>
+
+  <h2>Changes</h2>
+  <p>If we change this policy we update the date at the top. If a change affects how we use data you already gave us, we tell you in the app before it applies.</p>
+</main>
+<footer>
+  <div class="wrap">
+    <nav aria-label="Legal">
+      <a href="index.html">Home</a>
+      <a href="privacy.html" aria-current="page">Privacy</a>
+      <a href="terms.html">Terms</a>
+      <a href="data-deletion.html">Data deletion</a>
+    </nav>
+  </div>
+</footer>
+</body>
+</html>

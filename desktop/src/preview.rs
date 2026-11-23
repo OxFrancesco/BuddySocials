@@ -1,5 +1,5 @@
 //! Drafts shown the way each platform will show them: a Short on YouTube, a Reel or a post
-//! on Instagram, a video on TikTok, a post on LinkedIn and X.
+//! on Instagram, a video on TikTok, a post on LinkedIn, X and a Facebook Page.
 //!
 //! Used in two places:
 //! 1. Live inside the Studio (`live_strip`), updating on every keystroke and every Claude Code edit.
@@ -237,6 +237,7 @@ fn mock(platform: &str, post: &Post) -> El {
             }
             card
         }
+        "facebook" => facebook_post(post),
         _ => {
             let mut card = col().gap(8.0).child(byline(post, if platform == "x" { "now" } else { "Now · Anyone" }));
             if !post.text.is_empty() {
@@ -248,6 +249,43 @@ fn mock(platform: &str, post: &Post) -> El {
             card
         }
     }
+}
+
+/// The site a link points at, as Facebook prints it under a link preview.
+fn link_domain(text: &str) -> Option<String> {
+    let link = text.split_whitespace().find(|word| word.starts_with("https://") || word.starts_with("http://"))?;
+    let host = link.split("://").nth(1)?.split(['/', '?', '#']).next()?;
+    let host = host.strip_prefix("www.").unwrap_or(host);
+    (!host.is_empty()).then(|| host.to_uppercase())
+}
+
+/// A Page post: the Page's name, the text, then the photos, the video, or a preview of the first link.
+fn facebook_post(post: &Post) -> El {
+    let mut card = col().gap(8.0).child(byline(post, "Just now · Public"));
+    if !post.text.is_empty() {
+        card = card.child(text(post.text.to_string()).font(theme::mono(11.0)).color(theme::FG).max_lines(if post.count > 0 { 4 } else { 8 }));
+    }
+    if post.count > 0 {
+        card = card.child(inline_picture(post, if post.video { 1.25 } else { 1.0 }));
+    } else if let Some(domain) = link_domain(post.text) {
+        let height = (CARD * 0.52).round();
+        card = card.child(
+            col()
+                .w(CARD)
+                .border(1.0, theme::line())
+                .child(el().size(CARD, height).fill(theme::FG.alpha(0.08)))
+                .child(col().px(10.0).py(8.0).child(text(domain).font(theme::label(9.0)).color(theme::FAINT).truncate())),
+        );
+    }
+    card.child(
+        row()
+            .w(CARD)
+            .pt(6.0)
+            .border_sides([1.0, 0.0, 0.0, 0.0], theme::line())
+            .child(text("LIKE").font(theme::label(9.0)).color(theme::DIM).grow(1.0))
+            .child(text("COMMENT").font(theme::label(9.0)).color(theme::DIM).grow(1.0))
+            .child(text("SHARE").font(theme::label(9.0)).color(theme::DIM)),
+    )
 }
 
 fn standing(target: &Json, visibility: &str) -> (String, bool) {

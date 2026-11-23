@@ -299,6 +299,16 @@ fn account_status(account: &Json, syncing: bool) -> (String, bool) {
     }
 }
 
+/// Mirrors `CONNECT_HINT` in shared/platforms.ts.
+fn connect_hint(platform: &str) -> Option<&'static str> {
+    match platform {
+        "instagram" => Some("Needs an Instagram Business or Creator account."),
+        "tiktok" => Some("Posts arrive in your TikTok inbox to finish there."),
+        "facebook" => Some("Connects the Facebook Pages you manage."),
+        _ => None,
+    }
+}
+
 pub fn accounts(s: &App) -> El {
     let accounts = s.accounts();
     let available = s.query("connectStore:availability", json!({}));
@@ -324,6 +334,9 @@ pub fn accounts(s: &App) -> El {
             );
         }
         section = section.child(head);
+        if let Some(hint) = connect_hint(platform).filter(|_| can_connect) {
+            section = section.child(text(hint).font(theme::mono(12.0)).color(theme::DIM));
+        }
         if own.is_empty() {
             section = section.child(text("NOT CONNECTED").font(theme::label(10.0)).color(theme::DIM));
         }
@@ -393,5 +406,23 @@ pub fn accounts(s: &App) -> El {
     if let AuthState::SignedIn { email: Some(email) } = &s.auth {
         session = session.child(text(email.to_uppercase()).font(theme::label(10.0)).color(theme::DIM));
     }
-    ui::page("accounts", None, list.child(foot.child(session)))
+    let confirming = s.confirm_delete_account;
+    let mut delete = row().gap(12.0).center_y().child(
+        ui::button("delete-account", if confirming { "Delete everything" } else { "Delete my account" }, if confirming { ui::Kind::Primary } else { ui::Kind::Ghost })
+            .on_press(|s: &mut App| {
+                if s.confirm_delete_account {
+                    s.mutate("compliance:deleteMyAccount", json!({}));
+                    s.confirm_delete_account = false;
+                    s.notice = Some("Deleting your data. Connected accounts, drafts and uploads disappear as it runs.".into());
+                } else {
+                    s.confirm_delete_account = true;
+                }
+            }),
+    );
+    if confirming {
+        delete = delete
+            .child(ui::button("keep-account", "Keep it", ui::Kind::Outline).on_press(|s: &mut App| s.confirm_delete_account = false))
+            .child(text("REMOVES EVERY CONNECTED ACCOUNT, ITS TOKENS AND SYNCED DATA, YOUR DRAFTS AND UPLOADS".to_string()).font(theme::label(10.0)).color(theme::coral()));
+    }
+    ui::page("accounts", None, list.child(foot.child(session).child(delete)))
 }

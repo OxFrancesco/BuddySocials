@@ -3,6 +3,7 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation, internalQuery, mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { optionalOwner, requireOwner } from "./lib/owner";
+import { enforceRateLimit } from "./lib/rateLimits";
 import { discard, hold, release, uploadFor } from "./media";
 import {
   accountIssues,
@@ -389,13 +390,19 @@ export const remove = mutation({
 
 export const publish = mutation({
   args: { draftId: v.id("drafts"), accountIds: v.optional(v.array(v.id("accounts"))) },
-  handler: async (ctx, args) => publishFor(ctx, await requireOwner(ctx), args.draftId, args.accountIds),
+  handler: async (ctx, args) => {
+    const owner = await requireOwner(ctx);
+    await enforceRateLimit(ctx, "publish", owner);
+    return await publishFor(ctx, owner, args.draftId, args.accountIds);
+  },
 });
 
 export const schedule = mutation({
   args: { draftId: v.id("drafts"), at: v.number() },
   handler: async (ctx, args) => {
-    await scheduleFor(ctx, await requireOwner(ctx), args.draftId, args.at);
+    const owner = await requireOwner(ctx);
+    await enforceRateLimit(ctx, "publish", owner);
+    await scheduleFor(ctx, owner, args.draftId, args.at);
     return null;
   },
 });
@@ -412,7 +419,7 @@ export const cancelSchedule = mutation({
 export const generateUploadUrl = mutation({
   args: {},
   handler: async (ctx) => {
-    await requireOwner(ctx);
+    await enforceRateLimit(ctx, "uploadUrl", await requireOwner(ctx));
     return await ctx.storage.generateUploadUrl();
   },
 });
@@ -466,7 +473,10 @@ export const removeInternal = internalMutation({
 
 export const publishInternal = internalMutation({
   args: { owner: v.string(), draftId: v.id("drafts"), accountIds: v.optional(v.array(v.id("accounts"))) },
-  handler: async (ctx, args) => publishFor(ctx, args.owner, args.draftId, args.accountIds),
+  handler: async (ctx, args) => {
+    await enforceRateLimit(ctx, "publish", args.owner);
+    return await publishFor(ctx, args.owner, args.draftId, args.accountIds);
+  },
 });
 
 export const runScheduledPublish = internalMutation({
@@ -530,7 +540,10 @@ export const recordDelivery = internalMutation({
  */
 export const scheduleInternal = internalMutation({
   args: { owner: v.string(), draftId: v.id("drafts"), at: v.number() },
-  handler: async (ctx, args): Promise<Id<"_scheduled_functions">> => scheduleFor(ctx, args.owner, args.draftId, args.at),
+  handler: async (ctx, args): Promise<Id<"_scheduled_functions">> => {
+    await enforceRateLimit(ctx, "publish", args.owner);
+    return await scheduleFor(ctx, args.owner, args.draftId, args.at);
+  },
 });
 
 export const cancelScheduleInternal = internalMutation({

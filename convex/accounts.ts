@@ -3,6 +3,7 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation, internalQuery, mutation, query, type MutationCtx } from "./_generated/server";
 import { optionalOwner, requireOwner } from "./lib/owner";
+import { enforceRateLimit } from "./lib/rateLimits";
 import { PLATFORMS } from "../shared/platforms";
 
 const DEMO_PROFILES = {
@@ -11,6 +12,7 @@ const DEMO_PROFILES = {
   tiktok: { handle: "oddofrancesco", id: "demo-open-id" },
   x: { handle: "oddofrancesco", id: "1400000000000000000" },
   linkedin: { handle: "francesco-oddo", id: "urn:li:person:demo" },
+  facebook: { handle: "oddofrancesco", id: "100000000000000" },
 } as const;
 
 const MINUTE = 60_000;
@@ -63,6 +65,7 @@ export const loadDemo = mutation({
   args: {},
   handler: async (ctx) => {
     const owner = await requireOwner(ctx);
+    await enforceRateLimit(ctx, "sync", owner);
     const created: Id<"accounts">[] = [];
     for (const platform of PLATFORMS) {
       const existing = await ctx.db
@@ -108,6 +111,7 @@ export const syncNow = mutation({
   args: { accountId: v.optional(v.id("accounts")) },
   handler: async (ctx, args) => {
     const owner = await requireOwner(ctx);
+    await enforceRateLimit(ctx, "sync", owner);
     const accounts = await ctx.db
       .query("accounts")
       .withIndex("by_owner", (q) => q.eq("owner", owner))
@@ -126,11 +130,13 @@ export const syncNow = mutation({
  * account rarely recovers by itself, so both wait three hours between attempts.
  */
 export const syncDue = internalMutation({
-  args: {},
-  handler: async (ctx) => {
+  // Walks every user's accounts a page at a time, so no account is skipped however many there are.
+  args: { cursor: v.optional(v.union(v.string(), v.null())) },
+  handler: async (ctx, args) => {
     const now = Date.now();
-    const accounts = await ctx.db.query("accounts").take(200);
-    for (const account of accounts) {
+    const result = await ctx.db.query("accounts").paginate({ numItems: 200, cursor: args.cursor ?? null });
+    if (!result.isDone) await ctx.scheduler.runAfter(0, internal.accounts.syncDue, { cursor: result.continueCursor });
+    for (const account of result.page) {
       if (account.status === "reconnect") continue;
       const slow = (account.platform === "x" && account.source === "direct") || account.status === "error";
       const last = Math.max(account.lastAttemptAt ?? 0, account.lastSyncedAt ?? 0);

@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<title>Delete your data · BuddySocials</title>
+<meta name="description" content="How to delete your BuddySocials data, in the app or by email.">
+<link rel="icon" href="icon.png">
+<style>
+@font-face { font-family: "Chakra Petch"; src: url(fonts/ChakraPetch-Bold.woff2) format("woff2"); font-weight: 700; font-display: swap; }
+@font-face { font-family: "Plex Mono"; src: url(fonts/IBMPlexMono-Regular.woff2) format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Plex Mono"; src: url(fonts/IBMPlexMono-Bold.woff2) format("woff2"); font-weight: 700; font-display: swap; }
+:root {
+  --bg: #000;
+  --fg: #fff;
+  --coral: #d6544b;
+  --line: #292929;
+  --mute: #8c8c8c;
+  --pad: clamp(20px, 5vw, 64px);
+  --display: "Chakra Petch", system-ui, sans-serif;
+  --mono: "Plex Mono", ui-monospace, monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html { background: var(--bg); color: var(--fg); -webkit-text-size-adjust: 100%; }
+body { font: 400 15px/1.7 var(--mono); min-height: 100dvh; overflow-x: hidden; -webkit-font-smoothing: antialiased; background: var(--bg); }
+a { color: inherit; text-decoration-color: var(--coral); text-underline-offset: 3px; text-decoration-thickness: 2px; }
+a:hover { color: var(--coral); }
+::selection { background: var(--coral); color: var(--fg); }
+.wrap { width: min(820px, 100%); margin-inline: auto; padding-inline: var(--pad); }
+header { border-bottom: 2px solid var(--line); padding-block: 24px; }
+.brand { display: inline-flex; align-items: center; gap: 12px; text-decoration: none; }
+.brand img { width: 32px; height: 32px; }
+.brand span { font: 700 18px/1 var(--display); letter-spacing: 0.02em; }
+main { padding-block: clamp(48px, 10vh, 96px); }
+h1, h2 { font-family: var(--display); font-weight: 700; text-transform: uppercase; letter-spacing: -0.02em; }
+h1 { font-size: clamp(40px, 8vw, 72px); line-height: 0.95; }
+h1 em { font-style: normal; color: var(--coral); }
+h2 { font-size: clamp(22px, 3.6vw, 30px); line-height: 1.1; margin-top: 48px; padding-top: 24px; border-top: 2px solid var(--line); }
+h3 { font: 700 13px/1.4 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--mute); margin-top: 24px; }
+p, li { color: #d9d9d9; max-width: 68ch; }
+p, ul, ol { margin-top: 14px; }
+ul, ol { padding-left: 22px; }
+li + li { margin-top: 6px; }
+strong { color: var(--fg); }
+code { font-family: var(--mono); background: #141414; border: 1px solid var(--line); padding: 1px 5px; overflow-wrap: anywhere; }
+.updated { margin-top: 18px; color: var(--mute); font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; }
+.box { margin-top: 24px; border: 3px solid var(--fg); box-shadow: 6px 6px 0 var(--fg); padding: 20px; }
+.box p:first-child { margin-top: 0; }
+footer { border-top: 2px solid var(--line); padding-block: 32px 48px; }
+footer nav { display: flex; flex-wrap: wrap; gap: 12px 24px; font-weight: 700; font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; }
+footer a { text-decoration: none; border-bottom: 2px solid var(--coral); padding-bottom: 2px; }
+footer a[aria-current="page"] { color: var(--coral); }
+</style>
+</head>
+<body>
+<header><div class="wrap"><a class="brand" href="index.html"><img src="icon.png" alt=""><span>BUDDYSOCIALS</span></a></div></header>
+<main class="wrap">
+  <h1>Delete your <em>data</em></h1>
+  <p class="updated">Last updated 23 November 2026</p>
+
+  <p>You can delete one connected account's data, or everything BuddySocials holds about you. Either way it is permanent.</p>
+
+  <h2>Delete everything, in the app</h2>
+  <ol>
+    <li>Open BuddySocials on your phone or computer and go to Accounts.</li>
+    <li>Press Delete my account at the bottom of the screen.</li>
+    <li>Confirm with Delete everything.</li>
+  </ol>
+  <p>This deletes every connected account with its encrypted tokens, posts, metrics and comments, plus your drafts, scheduled posts, uploaded images and videos, goals, home screen layout, settings and widget keys. It runs in the background and usually finishes within minutes. Copies in database backups expire within 30 days.</p>
+  <p>Your sign-in with Clerk stays, so you can come back later and start empty. To have it deleted too, email us as described below.</p>
+
+  <h2>Delete one account</h2>
+  <p>On the Accounts screen, press Disconnect next to the account. On the desktop app, press it again to confirm. BuddySocials deletes that account's token, posts, metrics and comments.</p>
+  <p>To also stop the platform from accepting our token, remove BuddySocials from the platform's own settings:</p>
+  <ul>
+    <li>YouTube: <a href="https://myaccount.google.com/permissions">Google third-party access</a>.</li>
+    <li>Instagram: Settings, Apps and websites.</li>
+    <li>Facebook: Settings, Business integrations.</li>
+    <li>TikTok: Settings and privacy, Security, Manage app permissions.</li>
+    <li>X: Settings, Security and account access, Apps and sessions, Connected apps.</li>
+    <li>LinkedIn: Settings, Data privacy, Permitted services.</li>
+  </ul>
+
+  <h2>Through Instagram or Facebook</h2>
+  <p>When you remove BuddySocials in Instagram or Facebook, Meta tells us and we delete the account's token right away. If you also ask Meta to delete your data, Meta sends us a deletion request. We delete that account's token, posts, metrics and comments, and give Meta a confirmation code and a link where you can check the request's progress.</p>
+
+  <h2>By email</h2>
+  <p>If you can't sign in, or you want your sign-in deleted as well, email <a href="mailto:privacy@ttfunnel.ai">privacy@ttfunnel.ai</a> from the address you sign in with. Include the handles of the accounts you connected. We reply within 30 days and confirm when the deletion is done.</p>
+
+  <p>The <a href="privacy.html">privacy policy</a> lists everything we store.</p>
+</main>
+<footer>
+  <div class="wrap">
+    <nav aria-label="Legal">
+      <a href="index.html">Home</a>
+      <a href="privacy.html">Privacy</a>
+      <a href="terms.html">Terms</a>
+      <a href="data-deletion.html" aria-current="page">Data deletion</a>
+    </nav>
+  </div>
+</footer>
+</body>
+</html>

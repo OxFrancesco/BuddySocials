@@ -1,8 +1,11 @@
 "use node";
 
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { internalAction } from "./_generated/server";
+import { enforceRateLimit } from "./lib/rateLimits";
 import { MAX_IMAGE_BYTES, MAX_VIDEO_BYTES, mediaKindOf } from "../shared/drafts";
 
 type Attached = { storageId: string; kind: "image" | "video"; mimeType: string; byteSize: number; filename: string | null; url: string | null };
@@ -23,18 +26,60 @@ function publicUrl(raw: string): URL {
   return url;
 }
 
+/** Loopback, private, link-local, carrier-grade NAT, multicast and other non-internet ranges. */
+function privateAddress(address: string): boolean {
+  const lower = address.toLowerCase();
+  const mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  if (mapped) return privateAddress(mapped[1]!);
+  if (isIP(lower) === 4) {
+    const [a, b] = lower.split(".").map(Number) as [number, number];
+    return (
+      a === 0 || a === 10 || a === 127 || a >= 224 ||
+      (a === 100 && b >= 64 && b <= 127) ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 192 && b === 0) ||
+      (a === 198 && (b === 18 || b === 19))
+    );
+  }
+  return (
+    lower === "::" || lower === "::1" ||
+    lower.startsWith("fc") || lower.startsWith("fd") ||
+    /^fe[89ab]/.test(lower) ||
+    lower.startsWith("ff") ||
+    lower.startsWith("64:ff9b:") ||
+    lower.startsWith("2001:db8")
+  );
+}
+
+/** Refuses a host whose name points at a private network, such as `127.0.0.1.nip.io`. */
+async function publicHost(url: URL): Promise<URL> {
+  let addresses: { address: string }[];
+  try {
+    addresses = await lookup(url.hostname, { all: true, verbatim: true });
+  } catch {
+    throw new Error("That link could not be fetched.");
+  }
+  if (addresses.length === 0 || addresses.some((entry) => privateAddress(entry.address))) {
+    throw new Error("url must be a public https link.");
+  }
+  return url;
+}
+
 /** Fetches an image or video from a public link and stores it, ready to attach to a draft. */
 export const fromUrl = internalAction({
   args: { owner: v.string(), url: v.string(), filename: v.optional(v.string()) },
   handler: async (ctx, args): Promise<Attached> => {
-    let url = publicUrl(args.url);
+    await enforceRateLimit(ctx, "mediaImport", args.owner);
+    let url = await publicHost(publicUrl(args.url));
     let response: Response | null = null;
     // Redirects are followed by hand so each hop is checked, not only the first address.
     for (let hop = 0; hop < 5; hop += 1) {
       response = await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(120_000) });
       const next = response.status >= 300 && response.status < 400 ? response.headers.get("location") : null;
       if (next === null) break;
-      url = publicUrl(new URL(next, url).toString());
+      url = await publicHost(publicUrl(new URL(next, url).toString()));
       response = null;
     }
     if (response === null || !response.ok) throw new Error("That link could not be fetched.");

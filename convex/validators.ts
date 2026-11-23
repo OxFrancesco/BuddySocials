@@ -6,6 +6,7 @@ export const platformValidator = v.union(
   v.literal("tiktok"),
   v.literal("x"),
   v.literal("linkedin"),
+  v.literal("facebook"),
 );
 
 export const metricValidator = v.union(

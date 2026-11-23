@@ -128,6 +128,14 @@ export const NATIVE_POST_METRICS: Record<Platform, readonly NativeMetric[]> = {
     { name: "PROFILE_VIEW_FROM_CONTENT", label: "Profile views" },
     { name: "FOLLOWER_GAINED_FROM_CONTENT", label: "Followers gained" },
   ],
+  facebook: [
+    { name: "post_media_view", label: "Views" },
+    { name: "post_total_media_view_unique", label: "Viewers" },
+    { name: "reactions", label: "Reactions" },
+    { name: "comments", label: "Comments" },
+    { name: "shares", label: "Shares" },
+    { name: "post_clicks", label: "Clicks" },
+  ],
 };
 
 /** Provider names the SDK does not map to a canonical counter. */
@@ -147,6 +155,10 @@ export const EXTRA_CANONICAL: Record<string, keyof PostCounters> = {
   url_link_clicks: "clicks",
   user_profile_clicks: "profile_views",
   profile_visits: "profile_views",
+  post_media_view: "views",
+  post_total_media_view_unique: "reach",
+  reactions: "likes",
+  post_clicks: "clicks",
 };
 
 export type CanonicalMetric =

@@ -3,7 +3,7 @@ import { router } from "expo-router";
 import { Pressable, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "../../convex/_generated/api";
-import { PLATFORMS, PLATFORM_LABEL, type Platform } from "@shared/platforms";
+import { CONNECT_HINT, PLATFORMS, PLATFORM_LABEL, type Platform } from "@shared/platforms";
 import { useConnect } from "@/lib/connect";
 import { PlatformLogo } from "@/ui/platform-logo";
 import { Display, Label } from "@/ui/text";
@@ -20,7 +20,8 @@ export default function AddAccount() {
   const rows: Row[] = PLATFORMS.filter((platform) => available?.[platform] === true).map((platform) => ({
     key: platform,
     platform,
-    label: PLATFORM_LABEL[platform],
+    // Facebook connects the Pages you manage, never a personal profile.
+    label: platform === "facebook" ? "Facebook Page" : PLATFORM_LABEL[platform],
     pages: false,
   }));
   // Company Pages you administer, signed in through LinkedIn's separate Pages app.
@@ -44,16 +45,18 @@ export default function AddAccount() {
             flexDirection: "row",
             alignItems: "center",
             gap: 14,
-            height: 60,
+            minHeight: 60,
+            paddingVertical: 10,
             borderBottomWidth: 1,
             borderBottomColor: color.line,
             opacity: pressed || (busy !== null && busy !== row.platform) ? 0.6 : 1,
           })}
         >
           <PlatformLogo platform={row.platform} size={22} />
-          <Display size={20} style={{ flex: 1 }}>
-            {row.label}
-          </Display>
+          <View style={{ flex: 1 }}>
+            <Display size={20}>{row.label}</Display>
+            {!row.pages && CONNECT_HINT[row.platform] ? <Label tone="dim">{CONNECT_HINT[row.platform]}</Label> : null}
+          </View>
           {busy === row.platform ? <Label tone="coral">Opening</Label> : null}
         </Pressable>
       ))}

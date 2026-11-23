@@ -22,6 +22,7 @@ const ENV: Record<Platform, { id: string; secret: string; scopes?: string }> = {
   tiktok: { id: "TIKTOK_CLIENT_KEY", secret: "TIKTOK_CLIENT_SECRET" },
   x: { id: "X_CLIENT_ID", secret: "X_CLIENT_SECRET" },
   linkedin: { id: "LINKEDIN_CLIENT_ID", secret: "LINKEDIN_CLIENT_SECRET", scopes: "LINKEDIN_SCOPES" },
+  facebook: { id: "FACEBOOK_APP_ID", secret: "FACEBOOK_APP_SECRET", scopes: "FACEBOOK_SCOPES" },
 };
 
 /**
@@ -46,6 +47,8 @@ const SCOPES: Record<Platform, readonly string[]> = {
   tiktok: ["user.info.basic", "user.info.stats", "video.list", "video.upload"],
   x: ["tweet.read", "tweet.write", "users.read", "media.write", "offline.access"],
   linkedin: ["openid", "profile", "w_member_social"],
+  // Facebook signs in through social/facebook.ts, which holds its own scope list.
+  facebook: [],
 };
 
 export const LINKEDIN_API_VERSION = "202610";
@@ -69,6 +72,7 @@ export function providerFor(
   onToken: (accountId: string, displayName: string, token: OAuthTokenSet) => void,
 ) {
   const app = appCredentials(platform);
+  if (platform === "facebook") throw new Error("Facebook signs in through its own flow.");
   if (app === null) throw new Error(`${platform} is not set up on the server yet.`);
   const options = {
     ...app,
@@ -114,6 +118,8 @@ export async function refreshIfNeeded(
   platform: Platform,
   credential: PlatformCredential,
 ): Promise<PlatformCredential | null> {
+  // Facebook Page tokens taken from a long-lived user token never expire.
+  if (platform === "facebook") return null;
   const ahead = platform === "instagram" ? 7 * 86_400_000 : 5 * 60_000;
   if (credential.expiresAt === undefined || credential.expiresAt - Date.now() > ahead) return null;
   const app = appCredentials(platform);

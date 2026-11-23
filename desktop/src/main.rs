@@ -149,6 +149,7 @@ impl DraftEdit {
             "x" => Some(280),
             "linkedin" => Some(3000),
             "instagram" => Some(2200),
+            "facebook" => Some(63206),
             _ => None,
         };
         if let Some(limit) = limit {
@@ -233,6 +234,8 @@ pub struct App {
     pub reply_to: Option<String>,
     pub reply: TextEdit,
     pub confirm_disconnect: Option<String>,
+    /// Set after the first press on "Delete my account"; the second press deletes.
+    pub confirm_delete_account: bool,
     pub notice: Option<String>,
     pub charts: RefCell<HashMap<String, Chart>>,
     /// The chart under the pointer and how far along it, 0 to 1.
@@ -340,6 +343,7 @@ fn init() -> App {
         reply_to: None,
         reply: TextEdit::new(""),
         confirm_disconnect: None,
+        confirm_delete_account: false,
         notice: None,
         charts: RefCell::new(HashMap::new()),
         hover: None,

@@ -8,7 +8,14 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 target=()
-if [[ ${1:-} == --prod ]]; then target=(--prod); fi
+if [[ ${1:-} == --prod ]]; then
+  target=(--prod)
+  # A prod build talks to the prod deployment and the Clerk production instance by default.
+  : "${BUDDYSOCIALS_BUILD_CLERK_ISSUER:?Set BUDDYSOCIALS_BUILD_CLERK_ISSUER to the Clerk production Frontend API URL}"
+  : "${BUDDYSOCIALS_BUILD_CLERK_CLIENT_ID:?Set BUDDYSOCIALS_BUILD_CLERK_CLIENT_ID to the prod desktop OAuth client ID}"
+  export BUDDYSOCIALS_BUILD_CONVEX_URL=${BUDDYSOCIALS_BUILD_CONVEX_URL:-https://grand-dog-690.convex.cloud}
+  export BUDDYSOCIALS_BUILD_CLERK_ISSUER BUDDYSOCIALS_BUILD_CLERK_CLIENT_ID
+fi
 
 case $(uname -s) in
   Linux) os=linux ;;

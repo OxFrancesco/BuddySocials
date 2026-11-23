@@ -2,6 +2,7 @@
 
 import { SocialError, type JsonObject, type MetricValue } from "@opencoredev/social-sdk";
 import type { Platform } from "../../shared/platforms";
+import { facebookPosts } from "./facebook";
 
 /**
  * The SDK reads post counters one post at a time. These calls get the posts and their
@@ -100,6 +101,7 @@ export async function postsWithMetrics(
 ): Promise<PostPage | null> {
   if (platform === "x") return xPosts(accountId, accessToken, limit);
   if (platform === "instagram") return instagramPosts(accessToken, limit);
+  if (platform === "facebook") return facebookPosts(accountId, accessToken, limit);
   return null;
 }
 

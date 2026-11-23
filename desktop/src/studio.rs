@@ -664,6 +664,7 @@ fn text_limit(platform: &str) -> Option<usize> {
         "x" => Some(280),
         "linkedin" => Some(3000),
         "instagram" => Some(2200),
+        "facebook" => Some(63206),
         _ => None,
     }
 }

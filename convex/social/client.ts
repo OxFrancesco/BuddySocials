@@ -13,6 +13,7 @@ import { x } from "@opencoredev/social-sdk/x";
 import { youtube } from "@opencoredev/social-sdk/youtube";
 import type { Doc } from "../_generated/dataModel";
 import { demoAdapter } from "./demo";
+import { facebookAdapter } from "./facebook";
 
 export type PlatformCredential = {
   accessToken: string;
@@ -72,6 +73,8 @@ export function adapterFor(
       });
     case "tiktok":
       return tiktok({ auth: { accessToken, openId: account.platformAccountId }, verifiedMediaOrigins: [] });
+    case "facebook":
+      return facebookAdapter(account.platformAccountId, accessToken);
   }
 }
 

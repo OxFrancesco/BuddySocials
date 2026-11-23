@@ -25,7 +25,7 @@ pub fn line() -> Color {
     srgb(0x292929)
 }
 
-pub const PLATFORMS: [&str; 5] = ["youtube", "instagram", "tiktok", "x", "linkedin"];
+pub const PLATFORMS: [&str; 6] = ["youtube", "instagram", "tiktok", "x", "linkedin", "facebook"];
 
 pub fn platform_label(platform: &str) -> &'static str {
     match platform {
@@ -34,6 +34,7 @@ pub fn platform_label(platform: &str) -> &'static str {
         "tiktok" => "TikTok",
         "x" => "X",
         "linkedin" => "LinkedIn",
+        "facebook" => "Facebook",
         _ => "All",
     }
 }
@@ -46,6 +47,7 @@ pub fn platform_rgb(platform: &str) -> [u8; 3] {
         "tiktok" => [0x2E, 0xE6, 0xE0],
         "x" => [0xF2, 0xF2, 0xF2],
         "linkedin" => [0x4C, 0x8D, 0xFF],
+        "facebook" => [0x6E, 0x7B, 0xFF],
         _ => [0xD6, 0x54, 0x4B],
     }
 }

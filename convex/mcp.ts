@@ -4,6 +4,8 @@ import { isPlatform, type Platform } from "../shared/platforms";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { httpAction, type ActionCtx } from "./_generated/server";
+import { emailMayUseApp } from "./lib/owner";
+import { enforceRateLimit } from "./lib/rateLimits";
 
 /**
  * A stateless MCP server over HTTP: every request carries a WorkOS AuthKit access
@@ -15,7 +17,11 @@ import { httpAction, type ActionCtx } from "./_generated/server";
  * Set WORKOS_AUTHKIT_DOMAIN on the deployment (for example `your-app.authkit.app`).
  * The token's verified email decides whose data is used: it must belong to someone
  * who has signed in to the app, and pass OWNER_EMAILS like every other sign-in.
+ * Every tool runs as that user and only touches their rows; tool calls are rate limited per user.
  */
+
+/** JSON-RPC batches larger than this are refused, so one request can't fan out into many tool calls. */
+const MAX_BATCH = 10;
 
 const PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
 
@@ -88,6 +94,8 @@ async function ownerFor(ctx: ActionCtx, request: Request): Promise<string | Resp
     // The token must have been issued for this server, not for another app in the same WorkOS environment.
     const { payload } = await jwtVerify(token, server.keys, { issuer, audience: resourceUrl() });
     email = payload["email"];
+    // The email picks whose data is used, so an address the sign-in service hasn't verified is refused.
+    if (typeof email === "string" && payload["email_verified"] === false) return unauthorized("Verify your email address first.");
     if (typeof email !== "string" && server.userinfo) {
       // AuthKit access tokens carry the user ID; the email comes from the userinfo endpoint.
       const info = await fetch(server.userinfo, { headers: { authorization: `Bearer ${token}` } });
@@ -99,8 +107,7 @@ async function ownerFor(ctx: ActionCtx, request: Request): Promise<string | Resp
     return unauthorized("The sign-in has expired. Sign in again.");
   }
   if (typeof email !== "string" || !email) return unauthorized("This sign-in has no email address.");
-  const allowed = (process.env.OWNER_EMAILS ?? "").split(",").map((entry) => entry.trim().toLowerCase()).filter(Boolean);
-  if (allowed.length > 0 && !allowed.includes(email.toLowerCase())) return json({ error: "This account cannot open BuddySocials." }, 403);
+  if (!emailMayUseApp(email, true)) return json({ error: "This account cannot open BuddySocials." }, 403);
   const owner: string | null = await ctx.runQuery(internal.profiles.ownerByEmail, { email });
   if (owner === null) return json({ error: "Open the BuddySocials app and sign in once with this email, then try again." }, 403);
   return owner;
@@ -108,7 +115,7 @@ async function ownerFor(ctx: ActionCtx, request: Request): Promise<string | Resp
 
 /** What each platform does differently when a post goes out, for whoever is choosing where to post. */
 const PLATFORM_NOTES =
-  "Use platform_text to tailor copy per platform (e.g. <=280 chars for x, longer for linkedin/instagram/youtube). " +
+  "Use platform_text to tailor copy per platform (e.g. <=280 chars for x, longer for linkedin/facebook/instagram/youtube). " +
   "Instagram needs an image or a video (JPEG images). YouTube takes one MP4 video; set title (or first line of text) and youtube_visibility (public, unlisted, or private; default unlisted). " +
   "TikTok takes one MP4 video and sends it to the TikTok app's inbox, where the caption and privacy are set before posting.";
 
@@ -135,7 +142,7 @@ const platformTextProp = {
   type: ["object", "null"],
   additionalProperties: { type: "string" },
   description:
-    "Optional per-platform copy overrides keyed by platform name (x, linkedin, instagram, tiktok, youtube). Platforms omitted fall back to text. Null clears all overrides.",
+    "Optional per-platform copy overrides keyed by platform name (x, linkedin, facebook, instagram, tiktok, youtube). Platforms omitted fall back to text. Null clears all overrides.",
 };
 
 const youtubeVisibilityProp = {
@@ -256,7 +263,7 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        platform: { type: "string", enum: ["youtube", "instagram", "tiktok", "x", "linkedin"] },
+        platform: { type: "string", enum: ["youtube", "instagram", "tiktok", "x", "linkedin", "facebook"] },
         limit: { type: "number", description: "1 to 50 (default 20)." },
       },
       additionalProperties: false,
@@ -269,7 +276,7 @@ const TOOLS = [
       type: "object",
       properties: {
         open_only: { type: "boolean", description: "Default true." },
-        platform: { type: "string", enum: ["youtube", "instagram", "tiktok", "x", "linkedin"] },
+        platform: { type: "string", enum: ["youtube", "instagram", "tiktok", "x", "linkedin", "facebook"] },
         limit: { type: "number", description: "1 to 50 (default 25)." },
       },
       additionalProperties: false,
@@ -341,7 +348,7 @@ function optionalYoutubeVisibility(value: unknown): YoutubeVisibility | null | u
 
 function optionalPlatform(value: unknown): Platform | undefined {
   if (value === undefined) return undefined;
-  if (!isPlatform(value)) throw new Error("platform must be youtube, instagram, tiktok, x, or linkedin.");
+  if (!isPlatform(value)) throw new Error("platform must be youtube, instagram, tiktok, x, linkedin, or facebook.");
   return value;
 }
 
@@ -519,7 +526,7 @@ async function callTool(ctx: ActionCtx, owner: string, name: string, args: Recor
     }
     case "create_media_upload":
       return {
-        upload_url: await ctx.runMutation(internal.media.uploadUrlInternal, {}),
+        upload_url: await ctx.runMutation(internal.media.uploadUrlInternal, { owner }),
         how: "POST the file's raw bytes to upload_url with its Content-Type header. The JSON answer has storageId; pass it in media_ids.",
       };
     default:
@@ -563,6 +570,7 @@ async function answer(ctx: ActionCtx, owner: string, message: RpcRequest): Promi
     case "tools/call": {
       const name = typeof params["name"] === "string" ? params["name"] : "";
       try {
+        await enforceRateLimit(ctx, "mcp", owner);
         const result = await callTool(ctx, owner, name, (params["arguments"] ?? {}) as Record<string, unknown>);
         return { jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(result) }], isError: false } };
       } catch (error) {
@@ -584,6 +592,7 @@ export const post = httpAction(async (ctx, request) => {
     return json({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error." } }, 400);
   }
   if (Array.isArray(body)) {
+    if (body.length > MAX_BATCH) return json({ jsonrpc: "2.0", id: null, error: { code: -32600, message: `Send at most ${MAX_BATCH} requests at once.` } }, 400);
     const answers = (await Promise.all(body.map((message) => answer(ctx, owner, message as RpcRequest)))).filter((entry) => entry !== null);
     return answers.length > 0 ? json(answers) : new Response(null, { status: 202, headers: cors });
   }

@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
-import { internalMutation, mutation, query } from "./_generated/server";
+import { internalMutation, mutation, query, internalQuery } from "./_generated/server";
 import { optionalOwner, requireOwner } from "./lib/owner";
 import { platformValidator } from "./validators";
 import { PLATFORMS, type Platform } from "../shared/platforms";
@@ -13,6 +13,7 @@ const APP_ENV: Record<Platform, [string, string]> = {
   tiktok: ["TIKTOK_CLIENT_KEY", "TIKTOK_CLIENT_SECRET"],
   x: ["X_CLIENT_ID", "X_CLIENT_SECRET"],
   linkedin: ["LINKEDIN_CLIENT_ID", "LINKEDIN_CLIENT_SECRET"],
+  facebook: ["FACEBOOK_APP_ID", "FACEBOOK_APP_SECRET"],
 };
 
 /** Which platforms have a developer app configured on the server, so Connect can be offered. */
@@ -58,10 +59,24 @@ export const saveAttempt = internalMutation({
     providerState: v.optional(v.string()),
     redirectUri: v.string(),
     client: v.optional(v.literal("desktop")),
+    ownerLabel: v.optional(v.string()),
     app: appValidator,
   },
   handler: async (ctx, args) => {
     await ctx.db.insert("connectAttempts", { ...args, createdAt: Date.now() });
+  },
+});
+
+/** What the confirm page shows before the code is exchanged; null when the link is unknown or stale. */
+export const peekAttempt = internalQuery({
+  args: { state: v.string(), now: v.number() },
+  handler: async (ctx, args) => {
+    const attempt = await ctx.db
+      .query("connectAttempts")
+      .withIndex("by_state", (q) => q.eq("state", args.state))
+      .unique();
+    if (attempt === null || args.now - attempt.createdAt > ATTEMPT_TTL) return null;
+    return { platform: attempt.platform, ownerLabel: attempt.ownerLabel ?? null, desktop: attempt.client === "desktop" };
   },
 });
 

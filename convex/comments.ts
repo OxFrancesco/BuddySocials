@@ -4,6 +4,7 @@ import { internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
 import { internalMutation, internalQuery, mutation, query, type QueryCtx } from "./_generated/server";
 import { optionalOwner, requireOwner } from "./lib/owner";
+import { enforceRateLimit } from "./lib/rateLimits";
 import { platformValidator } from "./validators";
 
 async function withPosts(ctx: QueryCtx, comments: Doc<"comments">[]) {
@@ -91,6 +92,7 @@ export const reply = mutation({
     const comment = await ctx.db.get("comments", args.commentId);
     if (comment === null || comment.owner !== owner) throw new Error("Comment not found.");
     if (comment.reply?.status === "sending") return;
+    await enforceRateLimit(ctx, "commentReply", owner);
     await ctx.db.patch("comments", comment._id, {
       state: "replied",
       reply: { text, at: Date.now(), status: "sending" },

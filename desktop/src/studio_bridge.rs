@@ -236,7 +236,7 @@ fn tools_schema() -> Json {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "platform": { "type": "string", "enum": ["youtube", "instagram", "tiktok", "x", "linkedin"] },
+                    "platform": { "type": "string", "enum": ["youtube", "instagram", "tiktok", "x", "linkedin", "facebook"] },
                     "limit": { "type": "number" }
                 },
                 "additionalProperties": false
@@ -266,7 +266,7 @@ fn tools_schema() -> Json {
                     "platform_text": {
                         "type": ["object", "null"],
                         "additionalProperties": { "type": "string" },
-                        "description": "Optional per-platform overrides keyed by x, linkedin, instagram, tiktok, youtube."
+                        "description": "Optional per-platform overrides keyed by x, linkedin, facebook, instagram, tiktok, youtube."
                     },
                     "youtube_visibility": { "type": ["string", "null"], "enum": ["public", "unlisted", "private", null] },
                     "account_ids": { "type": "array", "items": { "type": "string" }, "description": "Target account IDs from studio_get_context." }

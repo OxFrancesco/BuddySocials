@@ -15,9 +15,9 @@ import {
 import type { Platform } from "../../shared/platforms";
 
 /**
- * A deterministic stand-in for the five platforms. It returns the same record
+ * A deterministic stand-in for the six platforms. It returns the same record
  * shapes the real adapters return (YouTube snippets, Instagram media, X tweets,
- * LinkedIn shares, TikTok videos), so the sync code path is identical. Posts
+ * LinkedIn shares, TikTok videos, Facebook Page posts), so the sync code path is identical. Posts
  * appear on a fixed schedule and their counters grow with real time, so every
  * sync sees movement.
  */
@@ -42,11 +42,12 @@ type Profile = {
 };
 
 const PROFILES: Record<Platform, Profile> = {
-  youtube: { handle: "@oddofrancesco", displayName: "Francesco Oddo", cadenceHours: 60, medianViews: 14_000, halfLifeHours: 70, likeRate: 0.042, commentRate: 0.006, shareRate: 0.004, saveRate: 0, followRate: 0.004, baseFollowers: 18_400 },
-  instagram: { handle: "oddofrancesco", displayName: "Francesco Oddo", cadenceHours: 40, medianViews: 9_000, halfLifeHours: 30, likeRate: 0.06, commentRate: 0.004, shareRate: 0.01, saveRate: 0.012, followRate: 0.002, baseFollowers: 12_900 },
-  tiktok: { handle: "oddofrancesco", displayName: "Francesco Oddo", cadenceHours: 30, medianViews: 16_000, halfLifeHours: 26, likeRate: 0.07, commentRate: 0.003, shareRate: 0.008, saveRate: 0.009, followRate: 0.0015, baseFollowers: 21_300 },
-  x: { handle: "oddofrancesco", displayName: "Francesco Oddo", cadenceHours: 14, medianViews: 4_200, halfLifeHours: 9, likeRate: 0.018, commentRate: 0.003, shareRate: 0.003, saveRate: 0.004, followRate: 0.0012, baseFollowers: 7_800 },
-  linkedin: { handle: "francesco-oddo", displayName: "Francesco Oddo", cadenceHours: 52, medianViews: 3_600, halfLifeHours: 34, likeRate: 0.024, commentRate: 0.004, shareRate: 0.002, saveRate: 0.002, followRate: 0.002, baseFollowers: 5_200 },
+  youtube: { handle: "@democreator", displayName: "Demo Creator", cadenceHours: 60, medianViews: 14_000, halfLifeHours: 70, likeRate: 0.042, commentRate: 0.006, shareRate: 0.004, saveRate: 0, followRate: 0.004, baseFollowers: 18_400 },
+  instagram: { handle: "democreator", displayName: "Demo Creator", cadenceHours: 40, medianViews: 9_000, halfLifeHours: 30, likeRate: 0.06, commentRate: 0.004, shareRate: 0.01, saveRate: 0.012, followRate: 0.002, baseFollowers: 12_900 },
+  tiktok: { handle: "democreator", displayName: "Demo Creator", cadenceHours: 30, medianViews: 16_000, halfLifeHours: 26, likeRate: 0.07, commentRate: 0.003, shareRate: 0.008, saveRate: 0.009, followRate: 0.0015, baseFollowers: 21_300 },
+  x: { handle: "democreator", displayName: "Demo Creator", cadenceHours: 14, medianViews: 4_200, halfLifeHours: 9, likeRate: 0.018, commentRate: 0.003, shareRate: 0.003, saveRate: 0.004, followRate: 0.0012, baseFollowers: 7_800 },
+  linkedin: { handle: "demo-creator", displayName: "Demo Creator", cadenceHours: 52, medianViews: 3_600, halfLifeHours: 34, likeRate: 0.024, commentRate: 0.004, shareRate: 0.002, saveRate: 0.002, followRate: 0.002, baseFollowers: 5_200 },
+  facebook: { handle: "democreator", displayName: "Demo Creator", cadenceHours: 48, medianViews: 2_800, halfLifeHours: 20, likeRate: 0.03, commentRate: 0.004, shareRate: 0.005, saveRate: 0, followRate: 0.001, baseFollowers: 3_100 },
 };
 
 const TOPICS = [
@@ -123,7 +124,7 @@ const AUTHORS = [
 ] as const;
 
 /** Comment threads per post the demo exposes; real platforms return every comment. */
-const COMMENT_CAP: Record<Platform, number> = { youtube: 10, instagram: 6, tiktok: 6, x: 3, linkedin: 5 };
+const COMMENT_CAP: Record<Platform, number> = { youtube: 10, instagram: 6, tiktok: 6, x: 3, linkedin: 5, facebook: 5 };
 
 type DemoPost = {
   readonly id: string;
@@ -188,6 +189,8 @@ function postId(platform: Platform, index: number): string {
       return `demo${n}`;
     case "linkedin":
       return `urn:li:share:7${n}`;
+    case "facebook":
+      return `100000000000000_${n}`;
     default:
       return `${platform}${n}`;
   }
@@ -266,6 +269,14 @@ function nativeMetrics(post: DemoPost, now: number): MetricValue[] {
       PROFILE_VIEW_FROM_CONTENT: Math.round(c.views * 0.008),
       FOLLOWER_GAINED_FROM_CONTENT: c.follows,
     },
+    facebook: {
+      post_media_view: c.views,
+      post_total_media_view_unique: reach,
+      reactions: c.likes,
+      comments: c.comments,
+      shares: c.shares,
+      post_clicks: Math.round(c.views * 0.02),
+    },
   };
   const fetchedAt = new Date(now).toISOString();
   return Object.entries(named[post.platform]).map(([name, value]) => ({
@@ -303,12 +314,20 @@ function providerRecord(post: DemoPost): JsonObject {
         title: post.title,
         video_description: post.title,
         create_time: Math.floor(post.publishedAt / 1000),
-        share_url: `https://www.tiktok.com/@oddofrancesco/video/${post.id}`,
+        share_url: `https://www.tiktok.com/@democreator/video/${post.id}`,
       };
     case "x":
       return { id: post.id, text: post.title, created_at: iso };
     case "linkedin":
       return { id: post.id, commentary: post.title, publishedAt: post.publishedAt };
+    case "facebook":
+      return {
+        id: post.id,
+        message: post.title,
+        created_time: iso,
+        permalink_url: `https://www.facebook.com/${post.id}`,
+        status_type: "mobile_status_update",
+      };
   }
 }
 

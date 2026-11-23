@@ -1,10 +1,10 @@
 import { PLATFORM_LABEL, type Platform } from "./platforms";
 
-/** The longest post each platform takes. X counts 280; LinkedIn 3,000; an Instagram caption 2,200. */
-export const TEXT_LIMIT: Partial<Record<Platform, number>> = { x: 280, linkedin: 3000, instagram: 2200 };
+/** The longest post each platform takes. X counts 280; LinkedIn 3,000; an Instagram caption 2,200; a Facebook post 63,206. */
+export const TEXT_LIMIT: Partial<Record<Platform, number>> = { x: 280, linkedin: 3000, instagram: 2200, facebook: 63206 };
 
 /** Platforms a draft can be published to. */
-export const CAN_POST: readonly Platform[] = ["linkedin", "x", "instagram", "tiktok", "youtube"];
+export const CAN_POST: readonly Platform[] = ["linkedin", "x", "instagram", "tiktok", "youtube", "facebook"];
 
 /** How a YouTube upload is shown by default. Can be overridden per draft before or after upload. */
 export const YOUTUBE_VISIBILITIES = ["public", "unlisted", "private"] as const;
@@ -41,6 +41,7 @@ const POSTING_SCOPES: Partial<Record<Platform, readonly string[]>> = {
     "https://www.googleapis.com/auth/youtube",
     "https://www.googleapis.com/auth/youtube.force-ssl",
   ],
+  facebook: ["pages_manage_posts"],
 };
 
 export const MAX_DRAFT_TEXT = 5000;
@@ -91,6 +92,14 @@ export const MEDIA_RULES: Partial<Record<Platform, MediaRule>> = {
   },
   // Instagram fetches each file from its link and only takes JPEG images, up to 8 MB.
   instagram: { images: 10, imageTypes: ["image/jpeg"], imageBytes: 8 * 1024 * 1024, imageNames: "JPEG", videoBytes: MAX_VIDEO_BYTES },
+  // Facebook also fetches each file from its link; photos can be up to 10 MB.
+  facebook: {
+    images: 10,
+    imageTypes: ["image/jpeg", "image/png", "image/gif"],
+    imageBytes: 10 * 1024 * 1024,
+    imageNames: "JPEG, PNG or GIF",
+    videoBytes: MAX_VIDEO_BYTES,
+  },
 };
 
 /** Platforms that take one video and nothing else. */

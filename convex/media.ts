@@ -3,6 +3,7 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation, mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { optionalOwner, requireOwner } from "./lib/owner";
+import { enforceRateLimit } from "./lib/rateLimits";
 import { CLEANUP_DAYS, DEFAULT_CLEANUP_DAYS, MAX_IMAGE_BYTES, MAX_VIDEO_BYTES, mediaKindOf, type DraftMediaKind } from "../shared/drafts";
 
 /**
@@ -14,6 +15,12 @@ import { CLEANUP_DAYS, DEFAULT_CLEANUP_DAYS, MAX_IMAGE_BYTES, MAX_VIDEO_BYTES, m
 
 const DAY_MS = 86_400_000;
 const BATCH = 100;
+/**
+ * A file nobody has claimed can only be claimed this soon after it was stored. Upload URLs last an
+ * hour, so a real upload is claimed well within it; older unclaimed files (desktop builds, media
+ * from before uploads were tracked) can't be taken over, or deleted, by someone who learns their ID.
+ */
+const CLAIM_WINDOW_MS = 6 * 60 * 60_000;
 
 /** Days an unused file is kept, or null when the owner cleans up by hand. */
 export async function cleanupDays(ctx: QueryCtx, owner: string): Promise<number | null> {
@@ -75,6 +82,11 @@ async function attachFor(ctx: MutationCtx, owner: string, args: { storageId: Id<
   if (existing !== null && existing.owner !== owner) throw new Error("File not found.");
   const file = await ctx.db.system.get("_storage", args.storageId);
   if (file === null) throw new Error("File not found.");
+  if (existing === null) {
+    if (Date.now() - file._creationTime > CLAIM_WINDOW_MS) throw new Error("File not found.");
+    const releases = await ctx.db.query("desktopReleases").take(100);
+    if (releases.some((release) => release.storageId === args.storageId)) throw new Error("File not found.");
+  }
   const kind: DraftMediaKind | null = mediaKindOf(file.contentType ?? "");
   const tooBig = kind === "image" ? file.size > MAX_IMAGE_BYTES : file.size > MAX_VIDEO_BYTES;
   if (existing === null && (kind === null || tooBig)) {
@@ -120,8 +132,11 @@ export const attachInternal = internalMutation({
 });
 
 export const uploadUrlInternal = internalMutation({
-  args: {},
-  handler: async (ctx) => await ctx.storage.generateUploadUrl(),
+  args: { owner: v.string() },
+  handler: async (ctx, args) => {
+    await enforceRateLimit(ctx, "uploadUrl", args.owner);
+    return await ctx.storage.generateUploadUrl();
+  },
 });
 
 async function unusedFor(ctx: QueryCtx, owner: string) {

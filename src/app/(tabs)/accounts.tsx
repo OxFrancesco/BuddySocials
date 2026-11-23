@@ -1,7 +1,7 @@
 import { useClerk, useUser } from "@clerk/expo";
 import { useMutation, useQuery } from "convex/react";
 import { router, useLocalSearchParams } from "expo-router";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Platform as RNPlatform, ScrollView, View } from "react-native";
 import { requestPinWidget } from "react-native-android-widget";
 import { HOME_WIDGETS } from "@/home-widgets/task-handler";
@@ -38,6 +38,8 @@ export default function Accounts() {
   const disconnect = useMutation(api.connectStore.disconnect);
   const loadDemo = useMutation(api.accounts.loadDemo);
   const removeDemo = useMutation(api.accounts.removeDemo);
+  const deleteMyAccount = useMutation(api.compliance.deleteMyAccount);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const { signOut } = useClerk();
   const { user } = useUser();
   const { connect, busy } = useConnect();
@@ -153,6 +155,32 @@ export default function Accounts() {
             <Button testID="sign-out" variant="ghost" label="Sign out" onPress={() => void signOut()} />
             {user?.primaryEmailAddress ? <Label size={10}>{user.primaryEmailAddress.emailAddress}</Label> : null}
           </View>
+          {confirmDelete ? (
+            <View testID="delete-account-confirm" style={{ borderWidth: 2, borderColor: color.coral, padding: 12, gap: 12, alignSelf: "stretch" }}>
+              <Body tone="coral">
+                This deletes every connected account with its sign-in tokens and synced posts, stats and comments, plus your drafts, uploads, goals and
+                layout. It can't be undone.
+              </Body>
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+                <Button
+                  testID="delete-account-yes"
+                  size="sm"
+                  variant="primary"
+                  label="Delete everything"
+                  onPress={() => {
+                    setConfirmDelete(false);
+                    void deleteMyAccount({}).then(
+                      () => setNotice({ text: "Deleting your data. Accounts, drafts and uploads disappear as it runs.", error: false }),
+                      () => setNotice({ text: "That didn't go through. Try again.", error: true }),
+                    );
+                  }}
+                />
+                <Button testID="delete-account-no" size="sm" variant="outline" label="Keep it" onPress={() => setConfirmDelete(false)} />
+              </View>
+            </View>
+          ) : (
+            <Button testID="delete-account" variant="ghost" label="Delete my account" onPress={() => setConfirmDelete(true)} />
+          )}
         </View>
       </ScrollView>
       {canAdd ? (

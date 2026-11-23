@@ -7,10 +7,13 @@ import { internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
 import { action, internalAction, type ActionCtx } from "./_generated/server";
 import { administeredPages, authorizationUrl as pagesAuthorizationUrl, exchangeCode } from "./social/linkedinPages";
+import * as facebook from "./social/facebook";
 import { requireOwner } from "./lib/owner";
+import { enforceRateLimit } from "./lib/rateLimits";
 import { openCredential, sealCredential } from "./social/client";
 import { providerFor, toCredential } from "./social/oauth";
 import { platformValidator } from "./validators";
+import { friendlyConnectError } from "./lib/connectErrors";
 import type { Platform } from "../shared/platforms";
 
 function base64url(bytes: Buffer): string {
@@ -39,7 +42,7 @@ function callbackUri(): string {
 /**
  * Asks the platform to show its login or account picker instead of reusing the
  * account the browser is already signed in to. X, TikTok and LinkedIn have no
- * such switch; they sign in whoever the browser has.
+ * such switch; they sign in whoever the browser has. Facebook asks in its own URL.
  */
 function askForAccount(platform: Platform, authorizationUrl: string): string {
   const url = new URL(authorizationUrl);
@@ -57,8 +60,20 @@ export const begin = action({
     /** LinkedIn only: connect the company Pages you administer instead of your profile. */
     pages: v.optional(v.boolean()),
   },
-  handler: async (ctx, args): Promise<string> => startFor(ctx, await requireOwner(ctx), args),
+  handler: async (ctx, args): Promise<string> => {
+    const owner = await requireOwner(ctx);
+    await enforceRateLimit(ctx, "oauthBegin", owner);
+    const identity = await ctx.auth.getUserIdentity();
+    return await startFor(ctx, owner, { ...args, ownerLabel: maskEmail(identity?.email ?? identity?.name ?? "") });
+  },
 });
+
+/** "francesco@example.com" → "fr•••@example.com": enough for someone to recognise their own account. */
+function maskEmail(email: string): string {
+  const at = email.indexOf("@");
+  if (at < 0) return email.length > 2 ? `${email.slice(0, 2)}•••` : email;
+  return `${email.slice(0, Math.min(2, at))}•••${email.slice(at)}`;
+}
 
 /** The same as `begin`, for the owner's own scripts run from the Convex CLI, where nobody is signed in. */
 export const beginInternal = internalAction({
@@ -69,8 +84,9 @@ export const beginInternal = internalAction({
 async function startFor(
   ctx: ActionCtx,
   owner: string,
-  args: { platform: Platform; another?: boolean; client?: "desktop"; pages?: boolean },
+  args: { platform: Platform; another?: boolean; client?: "desktop"; pages?: boolean; ownerLabel?: string },
 ): Promise<string> {
+  const label = args.ownerLabel ? { ownerLabel: args.ownerLabel } : {};
   {
     const redirectUri = callbackUri();
     const state = base64url(randomBytes(24));
@@ -86,6 +102,21 @@ async function startFor(
         redirectUri,
         app: "linkedinPages",
         ...(args.client ? { client: args.client } : {}),
+        ...label,
+      });
+      return url;
+    }
+    // Facebook Pages: Facebook Login, then one account per Page (social/facebook.ts).
+    if (args.platform === "facebook") {
+      const url = facebook.authorizationUrl(state, redirectUri, { another: args.another === true });
+      await ctx.runMutation(internal.connectStore.saveAttempt, {
+        owner,
+        platform: "facebook",
+        state,
+        codeVerifier,
+        redirectUri,
+        ...(args.client ? { client: args.client } : {}),
+        ...label,
       });
       return url;
     }
@@ -106,6 +137,7 @@ async function startFor(
       redirectUri,
       ...(started.providerState ? { providerState: started.providerState } : {}),
       ...(args.client ? { client: args.client } : {}),
+      ...label,
     });
     return args.another ? askForAccount(args.platform, started.authorizationUrl) : started.authorizationUrl;
   }
@@ -146,6 +178,60 @@ async function completePages(
   }
 }
 
+async function facebookUserId(userToken: string): Promise<string | null> {
+  try {
+    const response = await fetch(`https://graph.facebook.com/${facebook.GRAPH_VERSION}/me?fields=id`, {
+      headers: { authorization: `Bearer ${userToken}` },
+    });
+    if (!response.ok) return null;
+    const data = (await response.json()) as { id?: unknown };
+    return typeof data.id === "string" ? data.id : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Stores one account per Facebook Page the person may post to, each with its own Page token. */
+async function completeFacebook(
+  ctx: ActionCtx,
+  attempt: Doc<"connectAttempts">,
+  callbackUrl: string,
+  desktop: boolean,
+): Promise<{ platform: string; handle: string; existing: boolean; desktop: boolean } | { error: string; desktop: boolean }> {
+  try {
+    const userToken = await facebook.exchangeCode(callbackUrl, attempt.redirectUri);
+    const pages = await facebook.administeredPages(userToken);
+    const metaUserId = await facebookUserId(userToken);
+    if (pages.length === 0) {
+      return {
+        error: "This Facebook account can't post to any Page. Choose your Pages when Facebook asks, or ask a Page admin for full control or content access.",
+        desktop,
+      };
+    }
+    let existing = true;
+    for (const page of pages) {
+      const stored = await ctx.runMutation(internal.connectStore.storeConnection, {
+        owner: attempt.owner,
+        platform: "facebook",
+        platformAccountId: page.id,
+        displayName: page.name,
+        handle: page.handle,
+        sealed: sealCredential(page.credential),
+        ...(page.credential.scopes ? { scopes: page.credential.scopes } : {}),
+      });
+      existing &&= stored.existing;
+      // Meta's data-deletion and deauthorize callbacks name the person, not the Page.
+      if (metaUserId) {
+        await ctx.runMutation(internal.compliance.linkMetaUser, { accountId: stored.accountId, source: "facebook", metaUserId });
+      }
+    }
+    return { platform: "facebook", handle: pages.map((page) => page.name).join(", "), existing, desktop };
+  } catch (error) {
+    console.error("Facebook sign-in failed", error instanceof Error ? error.message : String(error));
+    return { error: "Facebook did not accept the sign-in. Try again.", desktop };
+  }
+}
+
 /** Runs from the HTTP callback: exchanges the code, seals the token, creates the account. */
 export const complete = internalAction({
   args: { state: v.string(), callbackUrl: v.string() },
@@ -156,6 +242,7 @@ export const complete = internalAction({
     if (attempt === null) return { error: "That sign-in link expired. Try connecting again.", desktop: false };
     const desktop = attempt.client === "desktop";
     if (attempt.app === "linkedinPages") return await completePages(ctx, attempt, args.callbackUrl, desktop);
+    if (attempt.platform === "facebook") return await completeFacebook(ctx, attempt, args.callbackUrl, desktop);
     const tokens: { accountId: string; displayName: string; token: OAuthTokenSet }[] = [];
     try {
       const provider = providerFor(attempt.platform, attempt.redirectUri, (accountId, displayName, token) => {
@@ -202,7 +289,7 @@ export const complete = internalAction({
       return { platform: attempt.platform, handle, existing, desktop };
     } catch (error) {
       console.error("OAuth completion failed", attempt.platform, error);
-      return { error: "The platform did not accept the sign-in. Try again.", desktop };
+      return { error: friendlyConnectError(attempt.platform, error), desktop };
     }
   },
 });
@@ -223,3 +310,4 @@ export const repairInstagramId = internalAction({
     return userId === loaded.account.platformAccountId ? "unchanged" : "updated";
   },
 });
+
